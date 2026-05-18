@@ -238,7 +238,16 @@ fn resolve_cache_asset_path(
     let resolved = if candidate.exists() {
         candidate.canonicalize()?
     } else {
-        normalize_path(&candidate)
+        // Candidate doesn't exist yet. Canonicalize its parent (which must
+        // exist — it's the cache dir) and join the filename. This avoids
+        // the macOS /tmp → /private/tmp symlink mismatch that would cause
+        // the starts_with check below to fail when cache_root is canonical
+        // but normalize_path is not.
+        let parent = candidate.parent().unwrap_or(&candidate);
+        let canonical_parent = parent
+            .canonicalize()
+            .unwrap_or_else(|_| normalize_path(parent));
+        canonical_parent.join(candidate.file_name().unwrap_or_default())
     };
 
     if !resolved.starts_with(&cache_root) {
