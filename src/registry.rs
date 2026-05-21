@@ -346,13 +346,41 @@ impl Reference {
                     parts[2].to_string(),
                 )
             }
-            _ => {
-                return Err(err("too many path components"));
+            n => {
+                // 4+ components — only valid when the first component is an explicit
+                // registry hostname (contains '.' or ':'). All middle components
+                // become the namespace, preserving arbitrary repository depth.
+                // Examples:
+                //   ghcr.io/org/team/machine:latest  → ns="org/team", name="machine"
+                //   us-docker.pkg.dev/proj/repo/img  → ns="proj/repo", name="img"
+                //   localhost:5000/a/b/c:dev         → ns="a/b",       name="c"
+                let first = parts[0];
+                if !first.contains('.') && !first.contains(':') {
+                    return Err(ReferenceError {
+                        input: raw_input.to_string(),
+                        reason: format!(
+                            "first component '{}' doesn't look like a registry hostname",
+                            first
+                        ),
+                    });
+                }
+                let name = parts[n - 1].to_string();
+                let namespace = parts[1..n - 1].join("/");
+                (first.to_string(), Some(namespace), name)
             }
         };
 
         if name.is_empty() {
             return Err(err("empty name"));
+        }
+
+        // Reject empty path components (e.g. ghcr.io/org//machine from a double slash).
+        if let Some(ns) = &namespace {
+            for component in ns.split('/') {
+                if component.is_empty() {
+                    return Err(err("empty repository component (check for double slashes)"));
+                }
+            }
         }
 
         Ok(Reference {
@@ -803,9 +831,57 @@ mirror = "ghcr-mirror.example.com"
     }
 
     #[test]
-    fn test_reference_error_too_many_components() {
-        let err = Reference::parse("a.com/b/c/d:latest").unwrap_err();
-        assert!(err.reason.contains("too many path components"));
+    fn test_reference_deep_path_ghcr() {
+        // ghcr.io/org/team/machine:latest
+        let r = Reference::parse("ghcr.io/org/team/machine:latest").unwrap();
+        assert_eq!(r.registry, "ghcr.io");
+        assert_eq!(r.namespace, Some("org/team".to_string()));
+        assert_eq!(r.name, "machine");
+        assert_eq!(r.tag, Some("latest".to_string()));
+        assert_eq!(r.repository(), "org/team/machine");
+    }
+
+    #[test]
+    fn test_reference_deep_path_gcr() {
+        // us-docker.pkg.dev/project/repo/image:tag (GCR Artifact Registry style)
+        let r = Reference::parse("us-docker.pkg.dev/project/repo/image:v2").unwrap();
+        assert_eq!(r.registry, "us-docker.pkg.dev");
+        assert_eq!(r.namespace, Some("project/repo".to_string()));
+        assert_eq!(r.name, "image");
+        assert_eq!(r.tag, Some("v2".to_string()));
+        assert_eq!(r.repository(), "project/repo/image");
+    }
+
+    #[test]
+    fn test_reference_deep_path_localhost() {
+        // localhost:5000/a/b/c:dev
+        let r = Reference::parse("localhost:5000/a/b/c:dev").unwrap();
+        assert_eq!(r.registry, "localhost:5000");
+        assert_eq!(r.namespace, Some("a/b".to_string()));
+        assert_eq!(r.name, "c");
+        assert_eq!(r.tag, Some("dev".to_string()));
+    }
+
+    #[test]
+    fn test_reference_deep_path_explicit_registry_required() {
+        // 4+ components without a registry hostname — must fail
+        let err = Reference::parse("org/team/repo/image:latest").unwrap_err();
+        assert!(
+            err.reason.contains("doesn't look like a registry hostname"),
+            "unexpected reason: {}",
+            err.reason
+        );
+    }
+
+    #[test]
+    fn test_reference_rejects_empty_path_components() {
+        // Double slashes produce empty components — must be caught
+        let err = Reference::parse("ghcr.io/org//machine:latest").unwrap_err();
+        assert!(
+            err.reason.contains("empty repository component"),
+            "unexpected reason: {}",
+            err.reason
+        );
     }
 
     // ── set_credentials / set_token / save ──────────────────────────────────

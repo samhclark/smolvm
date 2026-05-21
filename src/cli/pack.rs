@@ -1511,10 +1511,20 @@ fn build_registry_client(
     registry: &str,
     config: &smolvm::registry::RegistryConfig,
 ) -> smolvm::Result<smolvm_registry::RegistryClient> {
-    let base_url = if registry.starts_with("localhost") || registry.contains("127.0.0.1") {
-        format!("http://{}", registry)
+    let effective = config.get_mirror(registry).unwrap_or(registry);
+
+    // Docker Hub: the user-facing name is "docker.io" but the Distribution API
+    // endpoint is "registry-1.docker.io". The config key stays "docker.io" so
+    // credential lookup is consistent; only the HTTP endpoint changes.
+    let api_host = match effective {
+        "docker.io" => "registry-1.docker.io",
+        h => h,
+    };
+
+    let base_url = if smolvm_registry::is_local_registry(api_host) {
+        format!("http://{}", api_host)
     } else {
-        format!("https://{}", registry)
+        format!("https://{}", api_host)
     };
 
     let mut client = smolvm_registry::RegistryClient::new(base_url);
@@ -1525,8 +1535,16 @@ fn build_registry_client(
             // per-operation to obtain a short-lived OCI bearer token.
             client = client.with_identity_token(identity_token.clone());
         } else if let Some(auth) = config.get_credentials(registry) {
-            // Direct OCI bearer token sent straight to the registry.
-            client = client.with_token(auth.password);
+            if auth.username == "token" {
+                // Legacy direct-bearer convention: username="token" means the
+                // password value IS the bearer token, sent on every request.
+                client = client.with_token(auth.password);
+            } else {
+                // Standard Docker/OCI path: username+password are sent as Basic auth
+                // to the registry's token endpoint after a 401 Bearer challenge.
+                // Used for Docker Hub, GHCR, ECR, GCR, ACR, Harbor, and Quay.
+                client = client.with_basic_credentials(auth.username, auth.password);
+            }
         }
     }
 
@@ -1667,22 +1685,54 @@ mod tests {
     }
 
     #[test]
-    fn build_registry_client_falls_back_to_password_when_no_identity_token() {
+    fn build_registry_client_standard_credentials_use_basic_auth() {
+        // A real username (not "token") triggers the Docker/OCI Basic challenge path.
         let mut config = smolvm::registry::RegistryConfig::default();
         config.registries.insert(
-            "registry.example.com".to_string(),
+            "ghcr.io".to_string(),
             smolvm::registry::RegistryEntry {
-                username: Some("user".to_string()),
-                password: Some("direct_bearer".to_string()),
+                username: Some("github_user".to_string()),
+                password: Some("ghp_secret".to_string()),
                 ..Default::default()
             },
         );
 
-        let client = build_registry_client("registry.example.com", &config).unwrap();
+        let client = build_registry_client("ghcr.io", &config).unwrap();
+        assert_eq!(client.identity_token(), None);
         assert_eq!(
-            client.identity_token(),
-            None,
-            "direct-bearer path must not set an identity_token"
+            client.basic_credentials(),
+            Some(("github_user", "ghp_secret")),
+            "standard username must route to with_basic_credentials()"
+        );
+    }
+
+    #[test]
+    fn build_registry_client_token_username_sends_direct_bearer() {
+        // username="token" is the legacy direct-bearer convention.
+        let mut config = smolvm::registry::RegistryConfig::default();
+        config.registries.insert(
+            "custom.registry.io".to_string(),
+            smolvm::registry::RegistryEntry {
+                username: Some("token".to_string()),
+                password: Some("bearer_value".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let client = build_registry_client("custom.registry.io", &config).unwrap();
+        assert_eq!(client.identity_token(), None);
+        assert_eq!(client.basic_credentials(), None);
+    }
+
+    #[test]
+    fn build_registry_client_docker_hub_uses_api_endpoint() {
+        // docker.io must map to registry-1.docker.io for Distribution API calls.
+        let config = smolvm::registry::RegistryConfig::default();
+        let client = build_registry_client("docker.io", &config).unwrap();
+        assert_eq!(
+            client.base_url(),
+            "https://registry-1.docker.io",
+            "docker.io must map to registry-1.docker.io"
         );
     }
 
