@@ -1528,6 +1528,44 @@ impl AgentManager {
 
         tracing::debug!("waiting for agent to be ready");
 
+        // Fork clone: the guest resumes past boot, so it never (re)writes the
+        // `.smolvm-ready` marker. Detect readiness by pinging the restored agent
+        // directly (it is already in its accept loop) — no marker, no grace.
+        let is_clone = std::env::var_os("SMOLVM_SNAPSHOT_DIR").is_some_and(|v| !v.is_empty());
+        if is_clone {
+            while start.elapsed() < timeout {
+                {
+                    let mut inner = self.inner.lock();
+                    if let Some(ref mut child) = inner.child {
+                        if !child.is_running() {
+                            return Err(Error::agent(
+                                "monitor agent",
+                                "clone agent process exited during startup".to_string(),
+                            ));
+                        }
+                    }
+                }
+                if self.vsock_socket.exists() {
+                    if let Ok(mut client) =
+                        super::AgentClient::connect_with_boot_probe_timeout(&self.vsock_socket)
+                    {
+                        if client.ping().is_ok() {
+                            tracing::info!(
+                                elapsed_ms = start.elapsed().as_millis(),
+                                "clone agent ready (ping)"
+                            );
+                            return Ok(());
+                        }
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            return Err(Error::agent(
+                "wait for ready",
+                "clone agent did not respond to ping within timeout".to_string(),
+            ));
+        }
+
         let ready_marker = self.rootfs_path.join(AGENT_READY_MARKER);
 
         while start.elapsed() < timeout {

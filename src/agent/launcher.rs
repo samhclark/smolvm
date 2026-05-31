@@ -652,6 +652,29 @@ pub fn launch_agent_vm(config: &LaunchConfig<'_>) -> Result<()> {
             }
         }
 
+        // Fork clone: boot from a snapshot dir (CoW-map a golden VM's RAM +
+        // restore state) instead of cold-booting, when SMOLVM_SNAPSHOT_DIR is set.
+        if let Ok(snap_dir) = std::env::var("SMOLVM_SNAPSHOT_DIR") {
+            if !snap_dir.is_empty() {
+                match krun.set_snapshot {
+                    Some(set_snapshot) => match CString::new(snap_dir.clone()) {
+                        Ok(dir_c) => {
+                            let ret = set_snapshot(ctx, dir_c.as_ptr());
+                            if ret < 0 {
+                                tracing::error!("krun_set_snapshot failed: {ret}");
+                            } else {
+                                tracing::info!(dir = %snap_dir, "booting as fork clone from snapshot");
+                            }
+                        }
+                        Err(_) => tracing::warn!("snapshot dir contains null byte"),
+                    },
+                    None => tracing::warn!(
+                        "SMOLVM_SNAPSHOT_DIR set but libkrun lacks krun_set_snapshot"
+                    ),
+                }
+            }
+        }
+
         // Add virtiofs mounts
         // Each mount gets a tag like "smolvm0", "smolvm1", etc.
         // The guest must mount these manually (or via the agent)

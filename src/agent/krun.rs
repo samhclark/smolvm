@@ -56,6 +56,9 @@ pub struct KrunFunctions {
     pub set_gpu_options2: Option<unsafe extern "C" fn(u32, u32, u64) -> i32>,
     /// Register a Unix control socket for the VM (pause/resume/checkpoint/restore).
     pub set_control_socket: Option<unsafe extern "C" fn(u32, *const libc::c_char) -> i32>,
+    /// Boot the VM as a fork clone from a snapshot directory (CoW-map a golden
+    /// VM's RAM + restore state instead of cold-booting).
+    pub set_snapshot: Option<unsafe extern "C" fn(u32, *const libc::c_char) -> i32>,
 }
 
 impl KrunFunctions {
@@ -153,6 +156,7 @@ impl KrunFunctions {
             get_egress_handle: load_optional_sym!("krun_get_egress_handle"),
             set_gpu_options2: load_optional_sym!("krun_set_gpu_options2"),
             set_control_socket: load_optional_sym!("krun_set_control_socket"),
+            set_snapshot: load_optional_sym!("krun_set_snapshot"),
         })
     }
 }
