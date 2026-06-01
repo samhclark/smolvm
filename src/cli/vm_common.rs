@@ -267,6 +267,7 @@ pub(crate) fn run_init_commands(
                 context.env.to_vec(),
                 context.workdir.map(|s| s.to_string()),
                 None,
+                None,
             )?
         };
         if exit_code != 0 {
@@ -783,7 +784,7 @@ pub fn start_vm_named(
         if !bare_cmd.is_empty() {
             let env = record.env.clone();
             let (exit_code, stdout, stderr) =
-                client.vm_exec(bare_cmd, env, record.workdir.clone(), None)?;
+                client.vm_exec(bare_cmd, env, record.workdir.clone(), None, None)?;
             if !stdout.is_empty() {
                 let _ = std::io::stdout().write_all(&stdout);
             }

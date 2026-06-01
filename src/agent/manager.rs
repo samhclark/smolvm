@@ -202,7 +202,7 @@ pub fn vm_cache_root() -> PathBuf {
 /// concern. Adversarial collisions (an attacker picking a name that
 /// hashes to the same directory as an existing VM) take ~2^32 work, a
 /// few hours on a laptop. This is acceptable for single-user smolvm. A
-/// future multi-tenant deployment (smolcloud) should add per-tenant
+/// future multi-tenant deployment (smolfleet) should add per-tenant
 /// namespacing or a longer hash.
 pub fn vm_dir_hash(name: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -1189,11 +1189,26 @@ impl AgentManager {
         let exe = std::env::current_exe()
             .map_err(|e| Error::agent("find smolvm binary", e.to_string()))?;
         let spawn_start = Instant::now();
-        let child = std::process::Command::new(&exe)
+        // Embedders (e.g. the Node SDK, where current_exe is `node`) can point the
+        // boot subprocess at a `_boot-vm`-capable, signed helper binary instead of self.
+        let boot_exe = std::env::var_os("SMOLVM_BOOT_BINARY")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| exe.clone());
+        let child = std::process::Command::new(&boot_exe)
             .args(["_boot-vm", &config_path.to_string_lossy()])
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            // SMOLVM_BOOT_DEBUG=1 surfaces the boot subprocess's stdout/stderr so
+            // embedded-host launch failures can be diagnosed (normally silenced).
+            .stdout(if std::env::var_os("SMOLVM_BOOT_DEBUG").is_some() {
+                std::process::Stdio::inherit()
+            } else {
+                std::process::Stdio::null()
+            })
+            .stderr(if std::env::var_os("SMOLVM_BOOT_DEBUG").is_some() {
+                std::process::Stdio::inherit()
+            } else {
+                std::process::Stdio::null()
+            })
             // Own process group (pgid = child pid) so the VM is immune to
             // SIGHUP from the parent's terminal closing, without making it a
             // session leader. Session-leader status causes proc_pidinfo to

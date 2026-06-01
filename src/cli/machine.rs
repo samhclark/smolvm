@@ -937,7 +937,7 @@ impl RunCmd {
                     // Capture for error context before command is moved into vm_exec.
                     let cmd0 = command.first().cloned().unwrap_or_default();
                     let (exit_code, stdout, stderr) = client
-                        .vm_exec(command, env, params.workdir.clone(), self.timeout)
+                        .vm_exec(command, env, params.workdir.clone(), self.timeout, None)
                         .map_err(|e| {
                             // In bare VM mode a spawn ENOENT often means the user
                             // forgot --image and passed the image name as a positional.
@@ -1215,8 +1215,13 @@ impl ExecCmd {
                 std::process::exit(printer.exit_code);
             }
 
-            let (exit_code, stdout, stderr) =
-                client.vm_exec(self.command.clone(), env, workdir.clone(), self.timeout)?;
+            let (exit_code, stdout, stderr) = client.vm_exec(
+                self.command.clone(),
+                env,
+                workdir.clone(),
+                self.timeout,
+                None,
+            )?;
             vm_common::print_output_and_exit(&manager, exit_code, &stdout, &stderr);
         }
     }
@@ -2636,7 +2641,13 @@ impl MonitorCmd {
                 if let Some(ref cmd) = health_cmd {
                     match AgentClient::connect_with_short_timeout(manager.vsock_socket()) {
                         Ok(mut client) => {
-                            match client.vm_exec(cmd.clone(), vec![], None, Some(health_timeout)) {
+                            match client.vm_exec(
+                                cmd.clone(),
+                                vec![],
+                                None,
+                                Some(health_timeout),
+                                None,
+                            ) {
                                 Ok((0, _, _)) => {
                                     if consecutive_health_failures > 0 {
                                         println!("  health check passed (recovered)");

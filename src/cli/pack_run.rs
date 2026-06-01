@@ -754,7 +754,8 @@ fn execute_packed_command(
             if interactive || tty {
                 client.vm_exec_interactive(command, env, workdir, timeout, tty)
             } else {
-                let (exit_code, stdout, stderr) = client.vm_exec(command, env, workdir, timeout)?;
+                let (exit_code, stdout, stderr) =
+                    client.vm_exec(command, env, workdir, timeout, None)?;
 
                 if !stdout.is_empty() {
                     let _ = std::io::stdout().write_all(&stdout);

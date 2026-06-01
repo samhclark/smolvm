@@ -2847,9 +2847,14 @@ fn setup_docker_auth(
 
     let registry = extract_registry_from_image(image);
 
-    let temp_dir = tempfile::TempDir::new().map_err(|e| {
-        StorageError::new(format!("failed to create temp directory for auth: {}", e))
-    })?;
+    // The guest root filesystem (and thus the default temp dir, /tmp) is
+    // read-only, so create the auth config under the writable storage disk.
+    let temp_dir = tempfile::Builder::new()
+        .prefix("smolauth")
+        .tempdir_in(STORAGE_ROOT)
+        .map_err(|e| {
+            StorageError::new(format!("failed to create temp directory for auth: {}", e))
+        })?;
 
     let auth_b64 = base64_encode(&format!("{}:{}", a.username, a.password));
     let config_json = format!(

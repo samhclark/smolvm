@@ -11,6 +11,15 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
+/// Per-PID sample for computing CPU rate across heartbeat intervals.
+#[derive(Debug, Clone, Copy)]
+struct CpuSample {
+    /// When the sample was taken.
+    at: std::time::Instant,
+    /// Cumulative CPU time at that moment (nanoseconds).
+    cpu_time_ns: u64,
+}
+
 /// Shared API server state.
 pub struct ApiState {
     /// Registry of machine managers by name.
@@ -20,6 +29,9 @@ pub struct ApiState {
     reserved_names: RwLock<HashSet<String>>,
     /// Database for persistent state.
     db: SmolvmDb,
+    /// Previous CPU samples per VM PID, used to compute the fractional-CPU
+    /// rate as a delta over wall time. Pruned on each sample to drop dead PIDs.
+    cpu_samples: parking_lot::Mutex<HashMap<i32, CpuSample>>,
 }
 
 /// Internal machine entry with manager and configuration.
@@ -140,6 +152,7 @@ impl ApiState {
             machines: RwLock::new(HashMap::new()),
             reserved_names: RwLock::new(HashSet::new()),
             db,
+            cpu_samples: parking_lot::Mutex::new(HashMap::new()),
         })
     }
 
@@ -151,6 +164,7 @@ impl ApiState {
             machines: RwLock::new(HashMap::new()),
             reserved_names: RwLock::new(HashSet::new()),
             db,
+            cpu_samples: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 
@@ -363,6 +377,103 @@ impl ApiState {
             })
             .count();
         (total, running)
+    }
+
+    /// Compute total allocated resources across all running machines.
+    /// Returns (allocated_cpus, allocated_memory_mb).
+    pub fn allocated_resources(&self) -> (u32, u64) {
+        let machines = self.machines.read();
+        let mut cpus: u32 = 0;
+        let mut memory_mb: u64 = 0;
+        for entry in machines.values() {
+            if let Some(e) = entry.try_lock() {
+                if e.manager.is_process_alive() {
+                    cpus += e.resources.cpus.unwrap_or(1) as u32;
+                    memory_mb += e.resources.memory_mb.unwrap_or(256) as u64;
+                }
+            }
+        }
+        (cpus, memory_mb)
+    }
+
+    /// Sample real CPU + memory + disk utilization across all running VM processes.
+    ///
+    /// Returns `(used_cpus, used_memory_mb, used_disk_gb)`:
+    /// - CPU is fractional CPUs (e.g., 2.5 = 2.5 CPUs of load), computed as
+    ///   `Δcpu_time / Δwall_time` since the previous sample per PID. First sample
+    ///   for a new PID returns 0 CPU; subsequent samples return the real rate.
+    /// - Memory is the sum of resident set sizes across VM processes.
+    /// - Disk is the sum of VM storage + overlay disk file sizes on disk.
+    pub fn real_utilization(&self) -> (f64, u64, u64) {
+        let now = std::time::Instant::now();
+        let mut total_cpus: f64 = 0.0;
+        let mut total_rss_bytes: u64 = 0;
+        let mut total_disk_bytes: u64 = 0;
+
+        let pid_and_paths: Vec<(Option<i32>, std::path::PathBuf, std::path::PathBuf)> = {
+            let machines = self.machines.read();
+            machines
+                .values()
+                .filter_map(|entry| {
+                    entry.try_lock().and_then(|e| {
+                        if !e.manager.is_process_alive() {
+                            return None;
+                        }
+                        Some((
+                            e.manager.child_pid(),
+                            e.manager.storage_path().to_path_buf(),
+                            e.manager.overlay_path().to_path_buf(),
+                        ))
+                    })
+                })
+                .collect()
+        };
+
+        let mut samples = self.cpu_samples.lock();
+        let mut still_alive: HashSet<i32> = HashSet::with_capacity(pid_and_paths.len());
+
+        for (pid_opt, storage, overlay) in pid_and_paths {
+            // Disk: stat the storage + overlay files. Cheap (one stat() each).
+            if let Ok(meta) = std::fs::metadata(&storage) {
+                total_disk_bytes = total_disk_bytes.saturating_add(meta.len());
+            }
+            if let Ok(meta) = std::fs::metadata(&overlay) {
+                total_disk_bytes = total_disk_bytes.saturating_add(meta.len());
+            }
+
+            // CPU + memory: only if we have a PID
+            let Some(pid) = pid_opt else { continue };
+            still_alive.insert(pid);
+            let Some(stats) = crate::process::process_stats(pid) else {
+                continue;
+            };
+            total_rss_bytes = total_rss_bytes.saturating_add(stats.rss_bytes);
+
+            if let Some(prev) = samples.get(&pid).copied() {
+                let dt_ns = now.duration_since(prev.at).as_nanos() as u64;
+                if dt_ns > 0 {
+                    let dcpu_ns = stats.cpu_time_ns.saturating_sub(prev.cpu_time_ns);
+                    total_cpus += dcpu_ns as f64 / dt_ns as f64;
+                }
+            }
+            samples.insert(
+                pid,
+                CpuSample {
+                    at: now,
+                    cpu_time_ns: stats.cpu_time_ns,
+                },
+            );
+        }
+
+        // Drop samples for PIDs that no longer exist (avoids leaking memory
+        // as VMs come and go over the lifetime of the smolvm serve process).
+        samples.retain(|pid, _| still_alive.contains(pid));
+
+        (
+            total_cpus,
+            total_rss_bytes / (1024 * 1024),
+            total_disk_bytes / (1024 * 1024 * 1024),
+        )
     }
 
     // ========================================================================

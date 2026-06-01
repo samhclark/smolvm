@@ -71,6 +71,20 @@ pub struct ServeStartCmd {
     /// Output logs as structured JSON (for log aggregators)
     #[arg(long)]
     json_logs: bool,
+
+    /// Seccomp syscall-allowlist mode for VM boot subprocesses (untrusted-guest
+    /// hardening): `enforce` kills the VMM on a disallowed syscall, `audit` logs
+    /// only, `off` disables. x86_64-Linux only; ignored elsewhere. A pre-set
+    /// SMOLVM_SECCOMP env var takes precedence.
+    #[arg(long, value_name = "MODE", default_value = "enforce")]
+    seccomp: String,
+
+    /// Landlock filesystem-confinement mode for VM boot subprocesses: `enforce`
+    /// restricts each VMM to its own rootfs/disks/devices (denying the rest of
+    /// the host fs), `off` disables. Linux-only; ignored elsewhere. A pre-set
+    /// SMOLVM_LANDLOCK env var takes precedence.
+    #[arg(long, value_name = "MODE", default_value = "enforce")]
+    landlock: String,
 }
 
 impl ServeStartCmd {
@@ -89,6 +103,42 @@ impl ServeStartCmd {
             // Note: This won't work if logging is already initialized,
             // but the RUST_LOG env var can be used instead
             tracing::info!("verbose logging enabled");
+        }
+
+        // Untrusted multi-tenant hardening: when this serve process runs
+        // under a cgroup v2 delegation (a systemd unit with `Delegate=yes`),
+        // establish a delegated root and advertise it via SMOLVM_CGROUP_ROOT so
+        // every VM boot subprocess places itself in a per-VM cgroup with
+        // cpu/pids/memory caps. Best-effort: a no-op (None) when not delegated.
+        // Done here — single-threaded, before the tokio runtime — so set_var is
+        // safe. See docs/runtime-isolation-hardening.md.
+        #[cfg(target_os = "linux")]
+        if let Some(root) = smolvm::process::setup_cgroup_delegation_root() {
+            tracing::info!(cgroup_root = %root.display(), "per-VM cgroup resource caps enabled");
+            std::env::set_var("SMOLVM_CGROUP_ROOT", &root);
+        }
+
+        // Default-on: enable the seccomp syscall allowlist on every VM boot
+        // subprocess. `--seccomp` selects enforce|audit|off (default enforce); a
+        // pre-set SMOLVM_SECCOMP env wins for ad-hoc overrides. Inherited by the
+        // spawned `_boot-vm`. See docs/runtime-isolation-hardening.md.
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        if std::env::var_os("SMOLVM_SECCOMP").is_none() {
+            std::env::set_var("SMOLVM_SECCOMP", &self.seccomp);
+            if self.seccomp != "off" {
+                tracing::info!(mode = %self.seccomp, "VM seccomp syscall filtering enabled");
+            }
+        }
+
+        // Default-on: confine each VM boot subprocess's filesystem view via
+        // Landlock. `--landlock` selects enforce|off (default enforce); a pre-set
+        // SMOLVM_LANDLOCK env wins. Inherited by the spawned `_boot-vm`.
+        #[cfg(target_os = "linux")]
+        if std::env::var_os("SMOLVM_LANDLOCK").is_none() {
+            std::env::set_var("SMOLVM_LANDLOCK", &self.landlock);
+            if self.landlock != "off" {
+                tracing::info!(mode = %self.landlock, "VM filesystem confinement (Landlock) enabled");
+            }
         }
 
         // Create the runtime with signal handling enabled
@@ -139,9 +189,10 @@ impl ServeStartCmd {
 
         // Spawn supervisor task
         let supervisor_state = state.clone();
+        let supervisor_shutdown = shutdown_rx.clone();
         let supervisor_handle = tokio::spawn(async move {
             let supervisor =
-                smolvm::api::supervisor::Supervisor::new(supervisor_state, shutdown_rx);
+                smolvm::api::supervisor::Supervisor::new(supervisor_state, supervisor_shutdown);
             supervisor.run().await;
         });
 
@@ -155,7 +206,7 @@ impl ServeStartCmd {
             ListenTarget::Unix(path) => self.serve_unix(path, app).await?,
         }
 
-        // Signal supervisor to stop
+        // Signal all background tasks to stop
         let _ = shutdown_tx.send(true);
 
         // Wait for supervisor to finish (with timeout)

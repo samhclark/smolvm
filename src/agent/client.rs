@@ -30,6 +30,34 @@ pub enum ExecEvent {
     Error(String),
 }
 
+/// One input event fed into a channel-driven interactive session
+/// ([`AgentClient::interactive_session_io`]). This decouples the interactive
+/// poll loop from the process's real stdin so the session can be driven by a
+/// remote transport (e.g. a WebSocket terminal) instead of a local TTY.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InteractiveInput {
+    /// Bytes to forward to the command's stdin.
+    Stdin(Vec<u8>),
+    /// Terminal resize (PTY window change).
+    Resize {
+        /// New terminal width in columns.
+        cols: u16,
+        /// New terminal height in rows.
+        rows: u16,
+    },
+    /// End of input — sends an empty stdin frame (EOF) to the command.
+    Eof,
+}
+
+/// One output chunk produced by a channel-driven interactive session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InteractiveOutput {
+    /// A chunk of bytes from the command's stdout.
+    Stdout(Vec<u8>),
+    /// A chunk of bytes from the command's stderr.
+    Stderr(Vec<u8>),
+}
+
 // ============================================================================
 // Socket Timeout Constants
 // ============================================================================
@@ -75,6 +103,11 @@ const STDIN_BUF_SIZE: usize = 4096;
 /// Poll timeout in milliseconds for interactive I/O loops.
 /// Short enough for responsive SIGWINCH handling, long enough to avoid busy-waiting.
 const POLL_TIMEOUT_MS: i32 = 100;
+
+/// Exit code reported when a channel-driven interactive session ends because the
+/// remote peer (e.g. a WebSocket terminal) disconnected rather than the command
+/// exiting. 128 + SIGINT(2), matching the shell convention for an interrupted job.
+const DISCONNECT_EXIT_CODE: i32 = 130;
 
 /// RAII guard that resets the socket read timeout on drop.
 ///
@@ -855,6 +888,7 @@ impl AgentClient {
         env: Vec<(String, String)>,
         workdir: Option<String>,
         timeout: Option<Duration>,
+        stdin_data: Option<String>,
     ) -> Result<(i32, Vec<u8>, Vec<u8>)> {
         let _timeout_guard = self.set_exec_timeout(timeout)?;
         let timeout_ms = timeout.map(|t| t.as_millis() as u64);
@@ -867,6 +901,7 @@ impl AgentClient {
             interactive: false,
             tty: false,
             background: false,
+            stdin_data,
         })?;
 
         expect_completed(resp, "vm exec")
@@ -890,6 +925,7 @@ impl AgentClient {
             interactive: false,
             tty: false,
             background: true,
+            stdin_data: None,
         })?;
 
         let (exit_code, stdout, _stderr) = expect_completed(resp, "vm exec background")?;
@@ -1063,6 +1099,7 @@ impl AgentClient {
                 interactive: true,
                 tty,
                 background: false,
+                stdin_data: None,
             },
             tty,
             "vm exec interactive",
@@ -1252,6 +1289,180 @@ impl AgentClient {
     /// Send a window resize event to a running interactive command.
     pub fn send_resize(&mut self, cols: u16, rows: u16) -> Result<()> {
         self.send(&AgentRequest::Resize { cols, rows })
+    }
+
+    /// Run an interactive session driven by channels instead of the process's
+    /// real stdin/stdout. Input events arrive on `input`; output is delivered to
+    /// `on_output`. This is the transport-agnostic counterpart to
+    /// [`Self::interactive_session`] — used to bridge a VM PTY to a remote
+    /// WebSocket terminal without touching the host's terminal.
+    ///
+    /// The loop polls only the vsock socket (input comes from the channel, not an
+    /// fd) and drains pending input each iteration. When `input` disconnects
+    /// (the remote peer hung up) it sends EOF once and keeps running until the
+    /// command exits — a shell reading its PTY exits on EOF.
+    fn interactive_session_io<F>(
+        &mut self,
+        request: AgentRequest,
+        input: std::sync::mpsc::Receiver<InteractiveInput>,
+        mut on_output: F,
+        op: &str,
+    ) -> Result<i32>
+    where
+        F: FnMut(InteractiveOutput),
+    {
+        use crate::agent::terminal::poll_io;
+        use std::os::unix::io::AsRawFd;
+
+        // No socket read timeout — the poll loop handles readiness and the
+        // session runs until the command exits or the peer hangs up.
+        self.stream
+            .set_read_timeout(None)
+            .map_err(|e| Error::agent("set read timeout", e.to_string()))?;
+
+        self.send(&request)?;
+        match self.receive()? {
+            AgentResponse::Started => {}
+            AgentResponse::Error { message, .. } => return Err(Error::agent(op, message)),
+            _ => return Err(Error::agent(op, "expected Started response")),
+        }
+
+        let socket_fd = self.stream.as_raw_fd();
+        let mut input_eof_sent = false;
+
+        let exit_code = loop {
+            // stdin_fd = -1 → poll() ignores it; only the socket drives readiness.
+            let poll_result = poll_io(-1, socket_fd, POLL_TIMEOUT_MS)
+                .map_err(|e| Error::agent("poll", e.to_string()))?;
+
+            // Drain agent output first (prevents deadlock when its send buffer fills).
+            if poll_result.socket_ready {
+                match self.receive() {
+                    Ok(AgentResponse::Stdout { data }) => {
+                        on_output(InteractiveOutput::Stdout(data))
+                    }
+                    Ok(AgentResponse::Stderr { data }) => {
+                        on_output(InteractiveOutput::Stderr(data))
+                    }
+                    Ok(AgentResponse::Exited { exit_code }) => break exit_code,
+                    Ok(AgentResponse::Error { message, .. }) => {
+                        return Err(Error::agent(op, message))
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        if e.is_io()
+                            && matches!(
+                                e.source_io_error_kind(),
+                                Some(std::io::ErrorKind::WouldBlock)
+                            )
+                        {
+                            continue;
+                        }
+                        return Err(e);
+                    }
+                }
+            }
+
+            if poll_result.socket_hangup && !poll_result.socket_ready {
+                return Err(Error::agent(op, "connection to VM lost".to_string()));
+            }
+
+            // Forward any pending input without blocking the output path.
+            loop {
+                match input.try_recv() {
+                    Ok(InteractiveInput::Stdin(data)) => {
+                        self.send(&AgentRequest::Stdin { data })?
+                    }
+                    Ok(InteractiveInput::Resize { cols, rows }) => {
+                        self.send(&AgentRequest::Resize { cols, rows })?
+                    }
+                    Ok(InteractiveInput::Eof) => {
+                        if !input_eof_sent {
+                            self.send(&AgentRequest::Stdin { data: Vec::new() })?;
+                            input_eof_sent = true;
+                        }
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        // Remote peer (WebSocket client) gone. Return immediately
+                        // instead of waiting for the command to exit on its own.
+                        // This method runs on a DEDICATED, disposable connection,
+                        // so returning drops it; the agent's interactive loop then
+                        // sees the closed peer and kills the PTY child. Waiting here
+                        // would pin the connection (and, on the shared client, the
+                        // per-machine lock) until a command that ignores stdin EOF
+                        // — a `sleep`, a daemon — finally exits.
+                        return Ok(DISCONNECT_EXIT_CODE);
+                    }
+                }
+            }
+        };
+
+        Ok(exit_code)
+    }
+
+    /// Interactive VM exec driven by channels (remote PTY). Counterpart to
+    /// [`Self::vm_exec_interactive`] that does not bind the host terminal.
+    pub fn vm_exec_interactive_io<F>(
+        &mut self,
+        command: Vec<String>,
+        env: Vec<(String, String)>,
+        workdir: Option<String>,
+        tty: bool,
+        input: std::sync::mpsc::Receiver<InteractiveInput>,
+        on_output: F,
+    ) -> Result<i32>
+    where
+        F: FnMut(InteractiveOutput),
+    {
+        self.interactive_session_io(
+            AgentRequest::VmExec {
+                command,
+                env,
+                workdir,
+                timeout_ms: None,
+                interactive: true,
+                tty,
+                background: false,
+                stdin_data: None,
+            },
+            input,
+            on_output,
+            "vm exec interactive (io)",
+        )
+    }
+
+    /// Interactive container run driven by channels (remote PTY). Counterpart to
+    /// [`Self::run_interactive`] that does not bind the host terminal.
+    pub fn run_interactive_io<F>(
+        &mut self,
+        config: RunConfig,
+        input: std::sync::mpsc::Receiver<InteractiveInput>,
+        on_output: F,
+    ) -> Result<i32>
+    where
+        F: FnMut(InteractiveOutput),
+    {
+        let tty = config.tty;
+        self.interactive_session_io(
+            AgentRequest::Run {
+                image: config.image,
+                command: config.command,
+                env: config.env,
+                workdir: config.workdir,
+                user: config.user,
+                mounts: config.mounts,
+                timeout_ms: None,
+                interactive: true,
+                tty,
+                detached: false,
+                persistent_overlay_id: config.persistent_overlay_id,
+                background: false,
+            },
+            input,
+            on_output,
+            "run interactive (io)",
+        )
     }
 
     // ========================================================================
@@ -1581,6 +1792,7 @@ impl AgentClient {
             interactive: true,
             tty: false,
             background: false,
+            stdin_data: None,
         })?;
 
         collect_exec_events(self, "streaming exec", on_event)

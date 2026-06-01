@@ -91,6 +91,59 @@ impl CrunCommand {
         c
     }
 
+    /// Run a container with its console handed back over a socket:
+    /// `crun run --bundle <path> --console-socket <sock> <id>`.
+    ///
+    /// crun creates the container's PTY and sends its master fd to `console_socket`
+    /// (via SCM_RIGHTS), instead of relaying through crun's own stdio. This is the
+    /// only way the agent can own the real console — and therefore drive window
+    /// size / resize, which crun does not propagate in stdio-relay mode. crun's own
+    /// stdio is unused, so it's nulled.
+    pub fn run_with_console(bundle_dir: &Path, container_id: &str, console_socket: &Path) -> Self {
+        let mut c = Self::new();
+        c.cmd.args([
+            "run",
+            "--bundle",
+            &bundle_dir.to_string_lossy(),
+            "--console-socket",
+            &console_socket.to_string_lossy(),
+            container_id,
+        ]);
+        c.cmd.stdin(Stdio::null());
+        c.cmd.stdout(Stdio::null());
+        // Pipe stderr so the caller can surface crun's reason if the console
+        // handshake fails (and it falls back to a stdio PTY).
+        c.cmd.stderr(Stdio::piped());
+        c
+    }
+
+    /// `crun exec --tty --console-socket <sock> [--env ...] [--cwd <wd>] <id> <cmd...>`.
+    /// The TTY counterpart to [`Self::exec`] that takes the console over a socket
+    /// so the agent owns the real PTY master (for resize). crun's stdio is nulled.
+    pub fn exec_with_console(
+        container_id: &str,
+        env: &[(String, String)],
+        command: &[String],
+        workdir: Option<&str>,
+        console_socket: &Path,
+    ) -> Self {
+        let mut c = Self::new();
+        c.cmd.arg("exec").arg("--tty");
+        c.cmd.arg("--console-socket").arg(console_socket);
+        let env_with_path = ensure_path_in_env(env);
+        for (key, value) in &env_with_path {
+            c.cmd.arg("--env").arg(format!("{}={}", key, value));
+        }
+        if let Some(wd) = workdir {
+            c.cmd.args(["--cwd", wd]);
+        }
+        c.cmd.arg(container_id).args(command);
+        c.cmd.stdin(Stdio::null());
+        c.cmd.stdout(Stdio::null());
+        c.cmd.stderr(Stdio::piped());
+        c
+    }
+
     /// Run a container detached: `crun run --detach --bundle <path> <id>`
     ///
     /// Returns immediately after the container process is started. The container
@@ -187,17 +240,6 @@ impl CrunCommand {
         c
     }
 
-    /// Pass `--console-socket <path>` to the crun subcommand.
-    ///
-    /// With `process.terminal = true` in the OCI spec, crun will connect to
-    /// this AF_UNIX socket and send the container's PTY master fd via
-    /// `SCM_RIGHTS`. The caller must be listening on `path` before the crun
-    /// process starts.
-    pub fn console_socket(mut self, path: &Path) -> Self {
-        self.cmd.args(["--console-socket", &path.to_string_lossy()]);
-        self
-    }
-
     /// Set stdin to null.
     pub fn stdin_null(mut self) -> Self {
         self.cmd.stdin(Stdio::null());
@@ -207,6 +249,39 @@ impl CrunCommand {
     /// Set stdin to piped.
     pub fn stdin_piped(mut self) -> Self {
         self.cmd.stdin(Stdio::piped());
+        self
+    }
+
+    /// Set stdin from a raw fd (e.g., PTY slave).
+    ///
+    /// # Safety
+    /// The fd must be a valid open file descriptor. Ownership is transferred.
+    #[cfg(unix)]
+    pub unsafe fn stdin_from_fd(mut self, fd: std::os::unix::io::RawFd) -> Self {
+        use std::os::unix::io::FromRawFd;
+        self.cmd.stdin(Stdio::from_raw_fd(fd));
+        self
+    }
+
+    /// Set stdout from a raw fd (e.g., PTY slave).
+    ///
+    /// # Safety
+    /// The fd must be a valid open file descriptor. Ownership is transferred.
+    #[cfg(unix)]
+    pub unsafe fn stdout_from_fd(mut self, fd: std::os::unix::io::RawFd) -> Self {
+        use std::os::unix::io::FromRawFd;
+        self.cmd.stdout(Stdio::from_raw_fd(fd));
+        self
+    }
+
+    /// Set stderr from a raw fd (e.g., PTY slave).
+    ///
+    /// # Safety
+    /// The fd must be a valid open file descriptor. Ownership is transferred.
+    #[cfg(unix)]
+    pub unsafe fn stderr_from_fd(mut self, fd: std::os::unix::io::RawFd) -> Self {
+        use std::os::unix::io::FromRawFd;
+        self.cmd.stderr(Stdio::from_raw_fd(fd));
         self
     }
 

@@ -3,7 +3,6 @@ members = [
     ".",
     "crates/smolvm-agent",
     "crates/smolvm-network",
-    "crates/smolvm-napi",
     "crates/smolvm-pack",
     "crates/smolvm-protocol",
     "crates/smolvm-registry",
@@ -53,7 +52,7 @@ tempfile = "3"
 
 # HTTP API server
 tokio = { version = "1", features = ["full"] }
-axum = { version = "0.8", features = ["macros"] }
+axum = { version = "0.8", features = ["macros", "ws"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "timeout"] }
 tokio-stream = "0.1"
 parking_lot = "0.12"
@@ -66,7 +65,14 @@ utoipa-axum = "0.2"
 utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
 ipnet = "2.12.0"
 metrics = "0.24"
+
 metrics-exporter-prometheus = { version = "0.16", default-features = false }
+
+# Seccomp + Landlock for the VM boot subprocess (runtime isolation). Linux-only
+# — macOS/HVF has neither; the code is cfg-gated to linux (seccomp also to x86_64).
+[target.'cfg(target_os = "linux")'.dependencies]
+seccompiler = "0.4"
+landlock = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

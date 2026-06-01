@@ -242,6 +242,9 @@ pub enum AgentRequest {
         /// Background mode - spawn and return PID immediately without waiting.
         #[serde(default)]
         background: bool,
+        /// Data to pipe to the command's stdin.
+        #[serde(default)]
+        stdin_data: Option<String>,
     },
 
     /// Run a command in an image's rootfs.

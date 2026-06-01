@@ -18,10 +18,6 @@ use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 use tracing::{debug, error, info, warn};
 
-// console_socket depends on the Linux-only `pty` module and is only used by the
-// crun console-socket handshake, which itself only runs on Linux.
-#[cfg(target_os = "linux")]
-mod console_socket;
 mod crun;
 
 /// Ensures storage disk is mounted exactly once. The mount happens either during
@@ -445,6 +441,25 @@ impl MountEntry {
 /// Uses direct syscalls to avoid any overhead.
 #[cfg(target_os = "linux")]
 fn mount_essential_filesystems() {
+    // The guest root filesystem is read-only, and neither libkrun's init.c nor
+    // the kernel mounts /tmp. A writable /tmp is the idiomatic home for
+    // ephemeral runtime files (the registry-auth config, crun console sockets,
+    // the ssh-agent socket, …), so mount a tmpfs over it. Best-effort: a
+    // failure here must not abort boot, and the individual writers that target
+    // /storage still work without it. Runs unconditionally — before the
+    // init.c-already-mounted early return below — because init.c never mounts
+    // /tmp.
+    let tmp = MountEntry {
+        source: "tmpfs",
+        target: "/tmp",
+        fstype: "tmpfs",
+        flags: libc::MS_NOSUID | libc::MS_NODEV,
+        data: Some("mode=1777"),
+    };
+    if let Err(e) = tmp.mount() {
+        warn!("smolvm-agent: failed to mount tmpfs on /tmp: {}", e);
+    }
+
     // libkrun's init.c mounts /proc, /sys, /dev, /dev/pts before exec'ing
     // the agent. Skip redundant mounts if already present.
     if std::path::Path::new("/proc/uptime").exists() {
@@ -1904,8 +1919,16 @@ fn handle_request(
             timeout_ms,
             interactive: false,
             tty: false,
+            stdin_data,
             ..
-        } => handle_vm_exec(&command, &env, workdir.as_deref(), timeout_ms, client_fd),
+        } => handle_vm_exec(
+            &command,
+            &env,
+            workdir.as_deref(),
+            timeout_ms,
+            client_fd,
+            stdin_data.as_deref(),
+        ),
 
         AgentRequest::VmExec { .. } => {
             // Interactive mode should be handled by handle_interactive_vm_exec
@@ -2737,11 +2760,6 @@ fn handle_interactive_run(
     Ok(())
 }
 
-/// How long the agent waits for crun to connect to the console socket
-/// and hand over the container PTY master fd before giving up.
-#[cfg(target_os = "linux")]
-const CONSOLE_SOCKET_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
 /// Resolve the command for a container run.
 ///
 /// If the caller supplied a command, use it verbatim. Otherwise fall back to
@@ -3153,6 +3171,10 @@ fn spawn_exec_in_container(
     workdir: Option<&str>,
     tty: bool,
 ) -> Result<(Child, Option<pty::PtyMaster>), Box<dyn std::error::Error>> {
+    use std::io::Read as _;
+    use std::os::unix::io::AsRawFd as _;
+    use std::sync::atomic::Ordering;
+
     info!(
         container_id = %container_id,
         command = ?command,
@@ -3161,41 +3183,65 @@ fn spawn_exec_in_container(
     );
 
     if tty {
-        // Bind a unix socket for crun's --console-socket handshake before
-        // spawning crun; otherwise crun will fail to connect.
-        let console_dir = tempfile::Builder::new()
-            .prefix("smolvm-console-")
-            .tempdir()
-            .map_err(|e| format!("failed to create console socket dir: {}", e))?;
-        let socket_path = console_dir.path().join("console.sock");
-        let console = console_socket::ConsoleSocket::new(&socket_path)
-            .map_err(|e| format!("failed to bind console socket: {}", e))?;
-
-        let mut child = crun::CrunCommand::exec(container_id, env, command, workdir, true)
-            .console_socket(&socket_path)
-            .stdin_null()
+        // Preferred: console socket (resizable). Mirrors the create path.
+        if CONSOLE_SOCKET_WORKS.load(Ordering::Relaxed) {
+            let console = pty::ConsoleSocket::bind(container_id)?;
+            let mut child = crun::CrunCommand::exec_with_console(
+                container_id,
+                env,
+                command,
+                workdir,
+                console.path(),
+            )
             .spawn()?;
-
-        let pty_master = match console.recv_pty_master(CONSOLE_SOCKET_TIMEOUT) {
-            Ok(m) => m,
-            Err(e) => {
-                // crun died before handing us a PTY master. Report what it
-                // was doing so we do not just see a bare timeout.
-                let status = child.try_wait().ok().flatten();
-                error!(
-                    error = %e,
-                    crun_status = ?status,
-                    "failed to receive PTY master from crun exec"
-                );
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("failed to receive PTY master from crun exec: {}", e).into());
+            match console.recv_master(std::time::Duration::from_secs(3)) {
+                Ok(pty_master) => {
+                    let _ = pty_master.set_window_size(80, 24);
+                    if let Some(mut err) = child.stderr.take() {
+                        std::thread::spawn(move || {
+                            let mut sink = Vec::new();
+                            let _ = err.read_to_end(&mut sink);
+                        });
+                    }
+                    return Ok((child, Some(pty_master)));
+                }
+                Err(e) => {
+                    // A transient timeout (crun slow to hand back the console)
+                    // must not permanently disable console sockets for the rest
+                    // of the VM's life — that would silently lose resize on
+                    // every later session. Only latch off when the runtime
+                    // genuinely doesn't support them (a non-timeout failure).
+                    if e.kind() != std::io::ErrorKind::TimedOut {
+                        CONSOLE_SOCKET_WORKS.store(false, Ordering::Relaxed);
+                    }
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let stderr = child
+                        .stderr
+                        .take()
+                        .map(|mut s| {
+                            let mut buf = String::new();
+                            let _ = s.read_to_string(&mut buf);
+                            buf
+                        })
+                        .unwrap_or_default();
+                    warn!(error = %e, crun_stderr = %stderr.trim(), "exec console socket unavailable; falling back to stdio PTY");
+                }
             }
-        };
+        }
 
-        // `console` and `console_dir` drop at end of scope (after the tail
-        // return moves `child` and `pty_master` out), removing the socket
-        // file and temp dir once the handshake is done.
+        // Fallback: attach the agent's PTY slave as crun exec's stdio.
+        let (pty_master, slave_fd) = pty::open_pty(80, 24)?;
+        let slave_raw = slave_fd.as_raw_fd();
+        // SAFETY: slave_fd is a valid open fd from openpty.
+        let child = unsafe {
+            crun::CrunCommand::exec(container_id, env, command, workdir, true)
+                .stdin_from_fd(libc::dup(slave_raw))
+                .stdout_from_fd(libc::dup(slave_raw))
+                .stderr_from_fd(libc::dup(slave_raw))
+                .spawn()?
+        };
+        drop(slave_fd);
         Ok((child, Some(pty_master)))
     } else {
         let child = crun::CrunCommand::exec(container_id, env, command, workdir, false)
@@ -3242,6 +3288,16 @@ pub fn resolve_main_container(_persistent_overlay_id: Option<&str>) -> Option<St
     None
 }
 
+/// Whether the runtime's `--console-socket` handshake works in this environment.
+/// We attempt it once; if the runtime never hands back the console master (older
+/// crun, or a guest where it doesn't work), we flip this off and use the
+/// stdio-PTY fallback for the rest of the process's life — so only the first
+/// interactive session pays the connect timeout. The console path gives dynamic
+/// terminal resize; the fallback works everywhere but doesn't propagate resize.
+#[cfg(target_os = "linux")]
+static CONSOLE_SOCKET_WORKS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
 /// Spawn a command for interactive execution using crun OCI runtime.
 ///
 /// When `tty` is true, the OCI spec sets `terminal: true` and the agent
@@ -3264,7 +3320,10 @@ fn spawn_interactive_command(
     tty: bool,
     persistent_overlay_id: Option<&str>,
 ) -> Result<(Child, Option<pty::PtyMaster>), Box<dyn std::error::Error>> {
+    use std::io::Read as _;
+    use std::os::unix::io::AsRawFd as _;
     use std::path::Path;
+    use std::sync::atomic::Ordering;
 
     if command.is_empty() {
         return Err("empty command".into());
@@ -3320,41 +3379,66 @@ fn spawn_interactive_command(
     );
 
     if tty {
-        // Bind a unix socket for crun's --console-socket handshake before
-        // spawning crun; otherwise crun will fail to connect.
-        let console_dir = tempfile::Builder::new()
-            .prefix("smolvm-console-")
-            .tempdir()
-            .map_err(|e| format!("failed to create console socket dir: {}", e))?;
-        let socket_path = console_dir.path().join("console.sock");
-        let console = console_socket::ConsoleSocket::new(&socket_path)
-            .map_err(|e| format!("failed to bind console socket: {}", e))?;
-
-        let mut child = crun::CrunCommand::run(&bundle_path, &container_id)
-            .console_socket(&socket_path)
-            .stdin_null()
-            .spawn()?;
-
-        let pty_master = match console.recv_pty_master(CONSOLE_SOCKET_TIMEOUT) {
-            Ok(m) => m,
-            Err(e) => {
-                // crun died before handing us a PTY master. Report what it
-                // was doing so we do not just see a bare timeout.
-                let status = child.try_wait().ok().flatten();
-                error!(
-                    error = %e,
-                    crun_status = ?status,
-                    "failed to receive PTY master from crun"
-                );
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("failed to receive PTY master from crun: {}", e).into());
+        // Preferred path: take the container's console over a socket so the
+        // master we hold is the process's real tty (resize works).
+        if CONSOLE_SOCKET_WORKS.load(Ordering::Relaxed) {
+            let console = pty::ConsoleSocket::bind(&container_id)?;
+            let mut child =
+                crun::CrunCommand::run_with_console(&bundle_path, &container_id, console.path())
+                    .spawn()?;
+            match console.recv_master(std::time::Duration::from_secs(3)) {
+                Ok(pty_master) => {
+                    let _ = pty_master.set_window_size(80, 24);
+                    // Drain crun's stderr so a chatty runtime can't fill the pipe.
+                    if let Some(mut err) = child.stderr.take() {
+                        std::thread::spawn(move || {
+                            let mut sink = Vec::new();
+                            let _ = err.read_to_end(&mut sink);
+                        });
+                    }
+                    return Ok((child, Some(pty_master)));
+                }
+                Err(e) => {
+                    // A transient timeout (crun slow to hand back the console)
+                    // must not permanently disable console sockets for the rest
+                    // of the VM's life — that would silently lose resize on
+                    // every later session. Only latch off when the runtime
+                    // genuinely doesn't support them (a non-timeout failure).
+                    if e.kind() != std::io::ErrorKind::TimedOut {
+                        CONSOLE_SOCKET_WORKS.store(false, Ordering::Relaxed);
+                    }
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let stderr = child
+                        .stderr
+                        .take()
+                        .map(|mut s| {
+                            let mut buf = String::new();
+                            let _ = s.read_to_string(&mut buf);
+                            buf
+                        })
+                        .unwrap_or_default();
+                    warn!(error = %e, crun_stderr = %stderr.trim(), "console socket unavailable; falling back to stdio PTY (resize will not propagate)");
+                    // The failed `crun run --console-socket` may have registered
+                    // container state under this id; clear it so the fallback
+                    // `crun run` with the same id doesn't hit "already exists".
+                    let _ = crun::CrunCommand::delete(&container_id, true).output();
+                }
             }
-        };
+        }
 
-        // `console` and `console_dir` drop at end of scope (after the
-        // tail return moves `child` and `pty_master` out), removing the
-        // socket file and temp dir once the handshake is done.
+        // Fallback: attach the agent's PTY slave as crun's stdio.
+        let (pty_master, slave_fd) = pty::open_pty(80, 24)?;
+        let slave_raw = slave_fd.as_raw_fd();
+        // SAFETY: slave_fd is a valid open fd from openpty.
+        let child = unsafe {
+            crun::CrunCommand::run(&bundle_path, &container_id)
+                .stdin_from_fd(libc::dup(slave_raw))
+                .stdout_from_fd(libc::dup(slave_raw))
+                .stderr_from_fd(libc::dup(slave_raw))
+                .spawn()?
+        };
+        drop(slave_fd);
         Ok((child, Some(pty_master)))
     } else {
         let child = crun::CrunCommand::run(&bundle_path, &container_id)
@@ -4527,6 +4611,7 @@ fn handle_vm_exec(
     workdir: Option<&str>,
     timeout_ms: Option<u64>,
     client_fd: Option<std::os::unix::io::RawFd>,
+    stdin_data: Option<&str>,
 ) -> AgentResponse {
     info!(command = ?command, "executing directly in VM");
 
@@ -4547,10 +4632,13 @@ fn handle_vm_exec(
         cmd.current_dir(wd);
     }
 
-    // Commands that don't receive interactive stdin should get EOF
-    // immediately, not block on /dev/console (the agent's inherited stdin).
-    // Without this, `exec -- cat` hangs until the connection times out.
-    cmd.stdin(Stdio::null());
+    // If stdin data is provided, pipe it to the command.
+    // Otherwise, give the command immediate EOF via /dev/null.
+    if stdin_data.is_some() {
+        cmd.stdin(Stdio::piped());
+    } else {
+        cmd.stdin(Stdio::null());
+    }
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
@@ -4611,6 +4699,22 @@ fn handle_vm_exec(
                 let _ = err.take(MAX_OUTPUT as u64).read_to_end(&mut buf);
                 buf
             })
+    });
+
+    // Write stdin on a separate thread after stdout/stderr drains are live.
+    // This keeps the timeout/disconnect loop below active even when the child
+    // never reads stdin and the pipe buffer fills.
+    let stdin_handle = stdin_data.and_then(|data| {
+        child.stdin.take().map(|mut child_stdin| {
+            let data = data.to_owned();
+            std::thread::Builder::new()
+                .name("exec-stdin".into())
+                .spawn(move || {
+                    use std::io::Write;
+                    child_stdin.write_all(data.as_bytes())
+                    // child_stdin is dropped here, closing the pipe → child sees EOF.
+                })
+        })
     });
 
     // Wait for exit with timeout
@@ -4676,6 +4780,19 @@ fn handle_vm_exec(
         .and_then(|h| h.ok())
         .and_then(|h| h.join().ok())
         .unwrap_or_default();
+
+    if let Some(Ok(handle)) = stdin_handle {
+        if handle.is_finished() {
+            match handle.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+                Ok(Err(e)) => debug!(error = %e, "stdin writer finished with error"),
+                Err(_) => debug!("stdin writer thread panicked"),
+            }
+        } else {
+            debug!("stdin writer still blocked after command exit; detaching");
+        }
+    }
 
     AgentResponse::Completed {
         exit_code,
@@ -4946,6 +5063,31 @@ mod bg_reap_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn vm_exec_timeout_is_not_blocked_by_unread_stdin() {
+        let stdin_data = "x".repeat(8 * 1024 * 1024);
+        let start = std::time::Instant::now();
+
+        let response = handle_vm_exec(
+            &["sleep".to_string(), "5".to_string()],
+            &[],
+            None,
+            Some(100),
+            None,
+            Some(&stdin_data),
+        );
+
+        let AgentResponse::Completed { exit_code, .. } = response else {
+            panic!("expected completed response");
+        };
+        assert_eq!(exit_code, 124);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "blocked stdin must not prevent timeout handling"
+        );
+    }
 
     // ========================================================================
     // Streaming file-upload session tests

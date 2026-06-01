@@ -201,11 +201,27 @@ pub async fn create_machine(
     State(state): State<Arc<ApiState>>,
     Json(req): Json<CreateMachineRequest>,
 ) -> Result<Json<MachineInfo>, ApiError> {
-    // Validate: --from and --image are mutually exclusive
-    if req.from.is_some() && req.image.is_some() {
+    // Validate: registry_ref, from, and image are mutually exclusive
+    let source_count = [
+        req.registry_ref.is_some(),
+        req.from.is_some(),
+        req.image.is_some(),
+    ]
+    .iter()
+    .filter(|&&b| b)
+    .count();
+    if source_count > 1 {
         return Err(ApiError::BadRequest(
-            "'from' and 'image' are mutually exclusive".to_string(),
+            "'registryRef', 'from', and 'image' are mutually exclusive".to_string(),
         ));
+    }
+
+    // If registry_ref is set, pull the artifact from the registry and treat as `from`
+    let mut req = req;
+    if let Some(ref registry_ref) = req.registry_ref.clone() {
+        let pulled_path = pull_from_registry(registry_ref).await?;
+        req.from = Some(pulled_path);
+        req.registry_ref = None;
     }
 
     // Generate name if not provided, then validate. The on-disk layout uses
@@ -279,25 +295,17 @@ pub async fn create_machine(
             vec![],
             vec![],
             None,
-            req.cpus,
-            req.mem,
+            crate::data::resources::DEFAULT_MICROVM_CPU_COUNT,
+            crate::data::resources::DEFAULT_MICROVM_MEMORY_MIB,
             req.network,
         )
     };
 
-    // Use manifest defaults if user didn't override
-    let cpus =
-        if req.from.is_some() && req.cpus == crate::data::resources::DEFAULT_MICROVM_CPU_COUNT {
-            manifest_cpus
-        } else {
-            req.cpus
-        };
-    let mem = if req.from.is_some() && req.mem == crate::data::resources::DEFAULT_MICROVM_MEMORY_MIB
-    {
-        manifest_mem
-    } else {
-        req.mem
-    };
+    // Use explicit API resources when provided. Otherwise, preserve packed
+    // artifact manifest defaults, or the high VM defaults for non-artifact
+    // machines. Memory is ballooned, so a generous default does not imply
+    // immediate host commitment.
+    let (cpus, mem) = resolve_create_resources(&req, manifest_cpus, manifest_mem);
     let network = req.network || manifest_net;
 
     // Reserve the name atomically (prevents concurrent creation)
@@ -585,10 +593,24 @@ pub async fn stop_machine(
     let pid = record.pid;
     let pid_start_time = record.pid_start_time;
 
-    // Stop VM in blocking task
+    // Stop VM — prefer using the registered manager (which holds the flock)
+    // over creating a throwaway one. This ensures the flock is released so
+    // a subsequent start can re-acquire it.
+    let entry = state.get_machine(&name).ok();
     let name_clone = name.clone();
     let stopped = tokio::task::spawn_blocking(move || {
-        shutdown_machine_process(&name_clone, pid, pid_start_time)
+        if let Some(ref entry) = entry {
+            let e = entry.lock();
+            match e.manager.stop() {
+                Ok(()) => true,
+                Err(err) => {
+                    tracing::warn!(name = %name_clone, error = %err, "manager.stop() failed, falling back to process kill");
+                    shutdown_machine_process(&name_clone, pid, pid_start_time)
+                }
+            }
+        } else {
+            shutdown_machine_process(&name_clone, pid, pid_start_time)
+        }
     })
     .await
     .map_err(|e| ApiError::internal(format!("task error: {}", e)))?;
@@ -727,6 +749,7 @@ pub async fn exec_machine(
     let env = EnvVar::to_tuples(&req.env);
     let workdir = req.workdir.clone();
     let timeout = req.timeout_secs.map(Duration::from_secs);
+    let stdin_data = req.stdin.clone();
 
     let result = tokio::task::spawn_blocking(move || {
         // Get manager and check if running
@@ -748,7 +771,7 @@ pub async fn exec_machine(
             client.set_trace_id(tid);
         }
         let (exit_code, stdout, stderr) = client
-            .vm_exec(command, env, workdir, timeout)
+            .vm_exec(command, env, workdir, timeout, stdin_data)
             .map_err(|e| SmolvmError::agent("exec", e.to_string()))?;
 
         // Keep VM running (persistent)
@@ -865,6 +888,76 @@ pub async fn resize_machine(
     Ok(Json(record_to_info(&name, &record)))
 }
 
+async fn pull_from_registry(registry_ref: &str) -> Result<String, ApiError> {
+    let parsed = crate::registry::Reference::parse(registry_ref)
+        .map_err(|e| ApiError::BadRequest(format!("invalid registry reference: {}", e)))?;
+
+    let settings = crate::settings::SmolSettings::load()
+        .map_err(|e| ApiError::internal(format!("load settings: {}", e)))?;
+
+    let effective_registry = settings
+        .machines
+        .get_mirror(&parsed.registry)
+        .unwrap_or(&parsed.registry);
+    let api_host = match effective_registry {
+        "docker.io" => "registry-1.docker.io",
+        h => h,
+    };
+    let base_url = if smolvm_registry::is_local_registry(api_host) {
+        format!("http://{}", api_host)
+    } else {
+        format!("https://{}", api_host)
+    };
+
+    let mut client = smolvm_registry::RegistryClient::new(base_url);
+
+    if let Some(entry) = settings.machines.registries.get(effective_registry) {
+        if let Some(ref token) = entry.identity_token {
+            client = client.with_identity_token(token.clone());
+        }
+    }
+
+    let cache = smolvm_registry::BlobCache::open_default()
+        .map_err(|e| ApiError::internal(format!("blob cache: {}", e)))?;
+
+    let repo = parsed.repository();
+    let tag_or_digest = registry_reference_tag_or_digest(&parsed);
+
+    tracing::info!(
+        registry_ref = %registry_ref,
+        repo = %repo,
+        reference = %tag_or_digest,
+        "pulling .smolmachine from registry"
+    );
+
+    let result = smolvm_registry::pull(&client, &repo, tag_or_digest, None, &cache)
+        .await
+        .map_err(|e| ApiError::internal(format!("registry pull failed: {}", e)))?;
+
+    tracing::info!(path = %result.path.display(), cached = result.cached, "pull complete");
+
+    Ok(result.path.to_string_lossy().into_owned())
+}
+
+fn registry_reference_tag_or_digest(parsed: &crate::registry::Reference) -> &str {
+    parsed
+        .digest
+        .as_deref()
+        .or(parsed.tag.as_deref())
+        .unwrap_or("latest")
+}
+
+fn resolve_create_resources(
+    req: &CreateMachineRequest,
+    manifest_cpus: u8,
+    manifest_mem: u32,
+) -> (u8, u32) {
+    (
+        req.cpus.unwrap_or(manifest_cpus),
+        req.mem.unwrap_or(manifest_mem),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -939,6 +1032,94 @@ mod tests {
 
         assert_eq!(info.name, "network-vm");
         assert!(info.network);
+    }
+
+    #[test]
+    fn registry_reference_uses_digest_before_tag_or_latest() {
+        let digest = "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+
+        let digest_ref =
+            crate::registry::Reference::parse(&format!("python-dev@{digest}")).unwrap();
+        assert_eq!(registry_reference_tag_or_digest(&digest_ref), digest);
+
+        let tagged_ref = crate::registry::Reference::parse("python-dev:v1").unwrap();
+        assert_eq!(registry_reference_tag_or_digest(&tagged_ref), "v1");
+
+        let latest_ref = crate::registry::Reference::parse("python-dev").unwrap();
+        assert_eq!(registry_reference_tag_or_digest(&latest_ref), "latest");
+    }
+
+    fn minimal_create_request() -> CreateMachineRequest {
+        CreateMachineRequest {
+            name: Some("test-vm".to_string()),
+            cpus: None,
+            mem: None,
+            mounts: vec![],
+            ports: vec![],
+            network: false,
+            gpu: false,
+            storage_gb: None,
+            overlay_gb: None,
+            allowed_cidrs: None,
+            restart: None,
+            image: None,
+            from: None,
+            registry_ref: None,
+        }
+    }
+
+    #[test]
+    fn create_resources_use_high_defaults_when_omitted() {
+        let req = minimal_create_request();
+
+        assert_eq!(
+            resolve_create_resources(
+                &req,
+                crate::data::resources::DEFAULT_MICROVM_CPU_COUNT,
+                crate::data::resources::DEFAULT_MICROVM_MEMORY_MIB,
+            ),
+            (
+                crate::data::resources::DEFAULT_MICROVM_CPU_COUNT,
+                crate::data::resources::DEFAULT_MICROVM_MEMORY_MIB,
+            )
+        );
+    }
+
+    #[test]
+    fn create_resources_preserve_manifest_defaults_when_omitted() {
+        let req = minimal_create_request();
+
+        assert_eq!(resolve_create_resources(&req, 6, 12_288), (6, 12_288));
+    }
+
+    #[test]
+    fn create_resources_explicit_api_values_override_manifest_defaults() {
+        let mut req = minimal_create_request();
+        req.cpus = Some(2);
+        req.mem = Some(2048);
+
+        assert_eq!(resolve_create_resources(&req, 6, 12_288), (2, 2048));
+    }
+
+    #[test]
+    fn create_request_deserialization_keeps_resource_omission_distinct() {
+        let req: CreateMachineRequest = serde_json::from_value(serde_json::json!({
+            "name": "api-vm"
+        }))
+        .unwrap();
+
+        assert_eq!(req.cpus, None);
+        assert_eq!(req.mem, None);
+
+        let req: CreateMachineRequest = serde_json::from_value(serde_json::json!({
+            "name": "api-vm",
+            "cpus": 2,
+            "memoryMb": 2048
+        }))
+        .unwrap();
+
+        assert_eq!(req.cpus, Some(2));
+        assert_eq!(req.mem, Some(2048));
     }
 
     /// Helper to create a test database and API state.

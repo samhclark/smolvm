@@ -179,6 +179,23 @@ impl EmbeddedRuntime {
         handle.exec_streaming(command, env, workdir, timeout)
     }
 
+    /// Execute a command, delivering streaming output events LIVE via the
+    /// callback as they arrive (no buffering). The live counterpart of
+    /// `exec_streaming`; SDKs bridge the callback to a native iterator.
+    pub fn exec_streaming_with<F: FnMut(ExecEvent)>(
+        &self,
+        name: &str,
+        command: Vec<String>,
+        env: Vec<(String, String)>,
+        workdir: Option<String>,
+        timeout: Option<Duration>,
+        on_event: F,
+    ) -> Result<()> {
+        let handle = self.started_handle(name)?;
+        let mut handle = lock_handle(&handle)?;
+        handle.exec_streaming_with(command, env, workdir, timeout, on_event)
+    }
+
     /// Get the child PID if the machine is running.
     pub fn pid(&self, name: &str) -> Option<i32> {
         if let Ok(Some(handle)) = self.cached_handle(name) {

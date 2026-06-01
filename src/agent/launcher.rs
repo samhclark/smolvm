@@ -627,6 +627,31 @@ pub fn launch_agent_vm(config: &LaunchConfig<'_>) -> Result<()> {
             }
         }
 
+        // Register a control socket (pause/resume/checkpoint/restore) when
+        // requested via SMOLVM_CONTROL_SOCKET. Best-effort: a missing symbol
+        // (older libkrun) or a failure just leaves the VM without a control
+        // channel rather than aborting the boot.
+        if let Ok(ctl_path) = std::env::var("SMOLVM_CONTROL_SOCKET") {
+            if !ctl_path.is_empty() {
+                match krun.set_control_socket {
+                    Some(set_control_socket) => match CString::new(ctl_path.clone()) {
+                        Ok(ctl_c) => {
+                            let ret = set_control_socket(ctx, ctl_c.as_ptr());
+                            if ret < 0 {
+                                tracing::warn!("krun_set_control_socket failed: {ret}");
+                            } else {
+                                tracing::info!(socket = %ctl_path, "control socket enabled");
+                            }
+                        }
+                        Err(_) => tracing::warn!("control socket path contains null byte"),
+                    },
+                    None => tracing::warn!(
+                        "SMOLVM_CONTROL_SOCKET set but libkrun lacks krun_set_control_socket"
+                    ),
+                }
+            }
+        }
+
         // Add virtiofs mounts
         // Each mount gets a tag like "smolvm0", "smolvm1", etc.
         // The guest must mount these manually (or via the agent)

@@ -363,6 +363,7 @@ impl PackCreateCmd {
                 vec![],
                 None,
                 None,
+                None,
             )?;
 
             // stdout/stderr from vm_exec are now Vec<u8>; convert lossily
@@ -564,6 +565,7 @@ impl PackCreateCmd {
                     vec![],
                     None,
                     None,
+                    None,
                 )?;
                 if exit_code != 0 {
                     return Err(Error::agent(
@@ -634,6 +636,7 @@ impl PackCreateCmd {
                         ),
                     ],
                     vec![],
+                    None,
                     None,
                     None,
                 )?;
