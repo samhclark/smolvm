@@ -4313,6 +4313,27 @@ fn handle_run_background(
     }
 }
 
+/// Non-streaming exec/run returns the whole output in a single wire frame. If it
+/// would exceed the frame budget, return a clear error instead of attempting an
+/// oversized frame — which otherwise fails mid-send and surfaces to the caller as
+/// a confusing connection drop / SIGPIPE-truncated result. Large output should
+/// use streaming exec (`exec_stream`/`execStream`). The budget leaves headroom
+/// under MAX_FRAME_SIZE for base64 of the byte fields (~4/3) plus the JSON envelope.
+fn oversized_output_error(stdout: &[u8], stderr: &[u8]) -> Option<AgentResponse> {
+    const BUDGET: usize = 20 * 1024 * 1024; // ~20 MiB raw → ~27 MiB base64, under the 32 MiB frame
+    let total = stdout.len() + stderr.len();
+    if total > BUDGET {
+        return Some(AgentResponse::error(
+            format!(
+                "command output too large ({total} bytes; limit {BUDGET}). \
+                 Use streaming exec (exec_stream / execStream) for large output."
+            ),
+            error_codes::EXEC_FAILED,
+        ));
+    }
+    None
+}
+
 fn handle_run(
     image: &str,
     command: &[String],
@@ -4337,11 +4358,13 @@ fn handle_run(
         persistent_overlay_id,
         client_fd,
     ) {
-        Ok(result) => AgentResponse::Completed {
-            exit_code: result.exit_code,
-            stdout: result.stdout,
-            stderr: result.stderr,
-        },
+        Ok(result) => oversized_output_error(&result.stdout, &result.stderr).unwrap_or(
+            AgentResponse::Completed {
+                exit_code: result.exit_code,
+                stdout: result.stdout,
+                stderr: result.stderr,
+            },
+        ),
         Err(e) => AgentResponse::from_err(e, error_codes::RUN_FAILED),
     }
 }
@@ -4718,8 +4741,11 @@ fn handle_vm_exec(
         std::thread::Builder::new()
             .name("exec-stdout".into())
             .spawn(move || {
+                // Read ONE byte past the cap so the handler can tell "exactly at
+                // cap" from "overflowed" and return a clear error instead of a
+                // silently truncated result (+ a SIGPIPE exit on the child).
                 let mut buf = Vec::new();
-                let _ = out.take(MAX_OUTPUT as u64).read_to_end(&mut buf);
+                let _ = out.take(MAX_OUTPUT as u64 + 1).read_to_end(&mut buf);
                 buf
             })
     });
@@ -4729,7 +4755,7 @@ fn handle_vm_exec(
             .name("exec-stderr".into())
             .spawn(move || {
                 let mut buf = Vec::new();
-                let _ = err.take(MAX_OUTPUT as u64).read_to_end(&mut buf);
+                let _ = err.take(MAX_OUTPUT as u64 + 1).read_to_end(&mut buf);
                 buf
             })
     });
@@ -4827,6 +4853,18 @@ fn handle_vm_exec(
         }
     }
 
+    // If either stream exceeded the cap (we read one byte past it), the output
+    // was truncated and the child likely took a SIGPIPE — return a clear error
+    // instead of a silently-truncated success. Large output should stream.
+    if stdout.len() > MAX_OUTPUT || stderr.len() > MAX_OUTPUT {
+        return AgentResponse::error(
+            format!(
+                "command output exceeded {MAX_OUTPUT} bytes and was truncated. \
+                 Use streaming exec (exec_stream / execStream) for large output."
+            ),
+            error_codes::EXEC_FAILED,
+        );
+    }
     AgentResponse::Completed {
         exit_code,
         stdout,
