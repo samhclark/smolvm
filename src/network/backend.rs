@@ -10,7 +10,17 @@ pub const COMPAT_NET_FEATURES: u32 = 0;
 pub const TSI_FEATURE_HIJACK_INET: u32 = 1 << 0;
 
 /// Network backend override for machine launch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ValueEnum)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    ValueEnum,
+    utoipa::ToSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum NetworkBackend {
     /// Use libkrun TSI networking.

@@ -371,12 +371,7 @@ pub struct RunCmd {
     pub net: bool,
 
     /// Select the networking backend.
-    #[arg(
-        long = "net-backend",
-        value_enum,
-        hide = true,
-        help_heading = "Network"
-    )]
+    #[arg(long = "net-backend", value_enum, help_heading = "Network")]
     pub net_backend: Option<NetworkBackend>,
 
     /// Allow egress to specific CIDR range (can be used multiple times, implies --net)
@@ -1575,7 +1570,7 @@ pub struct CreateCmd {
     pub net: bool,
 
     /// Select the networking backend.
-    #[arg(long = "net-backend", value_enum, hide = true)]
+    #[arg(long = "net-backend", value_enum)]
     pub net_backend: Option<NetworkBackend>,
 
     /// Allow egress to specific CIDR range (can be used multiple times, implies --net)

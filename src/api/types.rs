@@ -104,6 +104,10 @@ pub struct ResourceSpec {
     /// Omit for unrestricted egress. Empty list denies all egress.
     #[serde(default)]
     pub allowed_cidrs: Option<Vec<String>>,
+    /// Network backend: `tsi` (default, outbound-only) or `virtio-net`
+    /// (required for published `ports`). Omit for the default (TSI).
+    #[serde(default)]
+    pub network_backend: Option<crate::network::NetworkBackend>,
 }
 
 // ============================================================================
@@ -412,6 +416,10 @@ pub struct CreateMachineRequest {
     /// Allowed egress CIDR ranges.
     #[serde(default)]
     pub allowed_cidrs: Option<Vec<String>>,
+    /// Network backend: `tsi` (default, outbound-only) or `virtio-net`.
+    /// Published `ports` require `virtio-net` (TSI has no inbound path).
+    #[serde(default)]
+    pub network_backend: Option<crate::network::NetworkBackend>,
     /// Restart policy configuration.
     #[serde(default)]
     pub restart: Option<RestartSpec>,

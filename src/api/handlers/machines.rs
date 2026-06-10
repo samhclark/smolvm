@@ -218,6 +218,17 @@ pub async fn create_machine(
         ));
     }
 
+    // Published ports need the inbound path that only virtio-net has; on the
+    // default (TSI) backend they would silently never accept connections.
+    if !req.ports.is_empty()
+        && req.network_backend != Some(crate::network::NetworkBackend::VirtioNet)
+    {
+        return Err(ApiError::BadRequest(
+            "published ports require networkBackend 'virtio-net' (TSI is outbound-only)"
+                .to_string(),
+        ));
+    }
+
     // If registry_ref is set, pull the artifact from the registry and treat as `from`
     let mut req = req;
     if let Some(ref registry_ref) = req.registry_ref.clone() {
@@ -401,6 +412,7 @@ pub async fn create_machine(
         storage_gb: req.storage_gb,
         overlay_gb: req.overlay_gb,
         allowed_cidrs: req.allowed_cidrs.clone(),
+        network_backend: req.network_backend,
     };
 
     // Validate request-body secret refs before persisting. Untrusted
@@ -1322,6 +1334,7 @@ mod tests {
             storage_gb: None,
             overlay_gb: None,
             allowed_cidrs: None,
+            network_backend: None,
             restart: None,
             image: None,
             from: None,

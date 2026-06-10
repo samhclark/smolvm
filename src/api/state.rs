@@ -261,6 +261,7 @@ impl ApiState {
                 storage_gb: record.storage_gb,
                 overlay_gb: record.overlay_gb,
                 allowed_cidrs: record.allowed_cidrs.clone(),
+                network_backend: record.network_backend,
             };
 
             // Create AgentManager and try to reconnect
@@ -646,6 +647,10 @@ impl ApiState {
         );
         record.storage_gb = reg.resources.storage_gb;
         record.overlay_gb = reg.resources.overlay_gb;
+        // Persist egress policy + backend selection from the request (previously
+        // dropped here, so API-created machines silently lost both).
+        record.allowed_cidrs = reg.resources.allowed_cidrs.clone();
+        record.network_backend = reg.resources.network_backend;
         record.image = reg.image;
         record.source_smolmachine = reg.source_smolmachine.clone();
         record.entrypoint = reg.entrypoint;
@@ -1014,7 +1019,7 @@ pub fn resource_spec_to_vm_resources(spec: &ResourceSpec, network: bool) -> VmRe
         cpus: spec.cpus.unwrap_or(DEFAULT_MICROVM_CPU_COUNT),
         memory_mib: spec.memory_mb.unwrap_or(DEFAULT_MICROVM_MEMORY_MIB),
         network,
-        network_backend: None,
+        network_backend: spec.network_backend,
         gpu: spec.gpu.unwrap_or(false),
         // gpu_vram_mib not currently on ResourceSpec — API callers
         // inherit the default. Add to ResourceSpec if the API ever
@@ -1036,6 +1041,7 @@ pub fn vm_resources_to_spec(res: VmResources) -> ResourceSpec {
         storage_gb: res.storage_gib,
         overlay_gb: res.overlay_gib,
         allowed_cidrs: res.allowed_cidrs,
+        network_backend: res.network_backend,
     }
 }
 
@@ -1130,6 +1136,7 @@ mod tests {
             storage_gb: None,
             overlay_gb: None,
             allowed_cidrs: None,
+            network_backend: None,
         };
         let res = resource_spec_to_vm_resources(&spec, false);
         assert_eq!(res.cpus, DEFAULT_MICROVM_CPU_COUNT);

@@ -166,12 +166,7 @@ pub struct PackRunCmd {
     pub net: bool,
 
     /// Select the networking backend.
-    #[arg(
-        long = "net-backend",
-        value_enum,
-        hide = true,
-        help_heading = "Network"
-    )]
+    #[arg(long = "net-backend", value_enum, help_heading = "Network")]
     pub net_backend: Option<NetworkBackend>,
 
     /// Number of virtual CPUs (overrides manifest default)
@@ -915,7 +910,7 @@ struct PackedRunArgs {
     net: bool,
 
     /// Select the networking backend.
-    #[arg(long = "net-backend", value_enum, hide = true)]
+    #[arg(long = "net-backend", value_enum)]
     net_backend: Option<NetworkBackend>,
 
     /// Number of vCPUs (overrides default)
@@ -967,7 +962,7 @@ struct PackedStartArgs {
     net: bool,
 
     /// Select the networking backend.
-    #[arg(long = "net-backend", value_enum, hide = true)]
+    #[arg(long = "net-backend", value_enum)]
     net_backend: Option<NetworkBackend>,
 }
 
