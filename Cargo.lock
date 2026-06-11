@@ -2023,7 +2023,7 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "smolfile"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "serde",
  "smolvm-protocol",
@@ -2110,7 +2110,7 @@ dependencies = [
 
 [[package]]
 name = "smolvm-network"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "crossbeam-queue",
  "humantime",
@@ -2121,7 +2121,7 @@ dependencies = [
 
 [[package]]
 name = "smolvm-pack"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "crc32fast",
  "dirs",
@@ -2139,7 +2139,7 @@ dependencies = [
 
 [[package]]
 name = "smolvm-protocol"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "base64",
  "serde",
@@ -2149,7 +2149,7 @@ dependencies = [
 
 [[package]]
 name = "smolvm-registry"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "bytes",
  "dirs",

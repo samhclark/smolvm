@@ -29,11 +29,11 @@ name = "smolvm"
 path = "src/main.rs"
 
 [dependencies]
-smolvm-network = { path = "crates/smolvm-network", version = "1.0.0" }
-smolvm-protocol = { path = "crates/smolvm-protocol", version = "1.0.0" }
-smolvm-pack = { path = "crates/smolvm-pack", version = "1.0.0" }
-smolvm-registry = { path = "crates/smolvm-registry", version = "1.0.0" }
-smolfile = { path = "crates/smolvm-smolfile", version = "1.0.0" }
+smolvm-network = { path = "crates/smolvm-network", version = "1.0.2" }
+smolvm-protocol = { path = "crates/smolvm-protocol", version = "1.0.2" }
+smolvm-pack = { path = "crates/smolvm-pack", version = "1.0.2" }
+smolvm-registry = { path = "crates/smolvm-registry", version = "1.0.2" }
+smolfile = { path = "crates/smolvm-smolfile", version = "1.0.2" }
 thiserror = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
@@ -82,7 +82,7 @@ landlock = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
-smolvm-protocol = { path = "crates/smolvm-protocol", version = "1.0.0" }
+smolvm-protocol = { path = "crates/smolvm-protocol", version = "1.0.2" }
 regex = "1"
 
 [build-dependencies]
