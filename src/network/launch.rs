@@ -53,14 +53,21 @@ pub fn plan_launch_network(
     // Published ports need the inbound path, which only virtio-net provides.
     // When the caller didn't pick a backend explicitly, default to virtio-net
     // IFF there are ports (TSI otherwise — it's lighter for outbound-only VMs).
-    // This is ONE rule in the shared launch path, so a machine that's reachable
-    // on a laptop is reachable in the fleet by construction — no per-deployment
-    // backend wiring to drift between local and cloud.
-    let backend = resources.network_backend.unwrap_or(if has_ports {
-        NetworkBackend::VirtioNet
-    } else {
-        NetworkBackend::Tsi
-    });
+    //
+    // Fleet/multi-tenant mode (SMOLVM_PUBLISH_ADDR set) additionally routes ALL
+    // machines through virtio-net, so the egress hard-floor (the smolvm-network
+    // `EgressPolicy` that denies metadata/internal/loopback) applies to no-ports
+    // machines too. TSI's egress filter lives in libkrun and may not carry the
+    // floor, so a default outbound-only tenant VM must not silently fall to TSI
+    // on a fleet node. Outside fleet mode, no-ports VMs keep the lighter default.
+    let fleet_mode = std::env::var_os("SMOLVM_PUBLISH_ADDR").is_some();
+    let backend = resources
+        .network_backend
+        .unwrap_or(if has_ports || fleet_mode {
+            NetworkBackend::VirtioNet
+        } else {
+            NetworkBackend::Tsi
+        });
     match backend {
         NetworkBackend::Tsi => LaunchNetworkPlan {
             backend: EffectiveNetworkBackend::Tsi,
