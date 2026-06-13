@@ -1091,6 +1091,8 @@ pub fn machine_entry_to_info(name: String, entry: &MachineEntry) -> MachineInfo 
             .collect(),
         ports: entry.ports.clone(),
         network: entry.network,
+        network_backend: entry.resources.network_backend,
+        allowed_cidrs: entry.resources.allowed_cidrs.clone(),
         storage_gb: entry.resources.storage_gb,
         overlay_gb: entry.resources.overlay_gb,
         created_at: 0,

@@ -95,6 +95,8 @@ fn record_to_info(name: &str, record: &VmRecord) -> MachineInfo {
             })
             .collect(),
         network: record.network,
+        network_backend: record.network_backend,
+        allowed_cidrs: record.allowed_cidrs.clone(),
         storage_gb: record.storage_gb,
         overlay_gb: record.overlay_gb,
         created_at: record.created_at,
@@ -1305,6 +1307,30 @@ mod tests {
 
         assert_eq!(info.name, "network-vm");
         assert!(info.network);
+    }
+
+    #[test]
+    fn test_record_to_info_echoes_backend_and_cidrs() {
+        let mut record = VmRecord::new("policy-vm".to_string(), 1, 512, vec![], vec![], true);
+        record.network_backend = Some(crate::network::NetworkBackend::VirtioNet);
+        record.allowed_cidrs = Some(vec!["10.0.0.0/8".to_string()]);
+
+        let info = record_to_info("policy-vm", &record);
+
+        assert_eq!(
+            info.network_backend,
+            Some(crate::network::NetworkBackend::VirtioNet)
+        );
+        assert_eq!(
+            info.allowed_cidrs.as_deref(),
+            Some(["10.0.0.0/8".to_string()].as_slice())
+        );
+
+        // Unset config stays absent so the JSON omits the fields entirely.
+        let bare = VmRecord::new("bare-vm".to_string(), 1, 512, vec![], vec![], false);
+        let bare_info = record_to_info("bare-vm", &bare);
+        assert!(bare_info.network_backend.is_none());
+        assert!(bare_info.allowed_cidrs.is_none());
     }
 
     #[test]

@@ -504,6 +504,13 @@ pub struct MachineInfo {
     pub ports: Vec<PortSpec>,
     /// Whether outbound network access is enabled.
     pub network: bool,
+    /// Network backend the machine runs (`tsi` or `virtio-net`). Omitted when
+    /// unset (the default TSI). Echoes back what `create` accepted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network_backend: Option<crate::network::NetworkBackend>,
+    /// Allowed egress CIDRs. Omitted when unrestricted; an empty list denies all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed_cidrs: Option<Vec<String>>,
     /// Storage disk size in GiB.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = 20)]
