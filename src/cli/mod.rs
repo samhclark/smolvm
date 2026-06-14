@@ -4,13 +4,10 @@ pub mod cleanup_ephemeral;
 pub mod config;
 pub mod internal_boot;
 pub mod machine;
-pub mod openapi;
 pub mod pack;
 pub mod pack_run;
 pub mod parsers;
 pub mod proxy_opts;
-pub mod serve;
-pub mod serve_tls;
 pub mod smolfile;
 pub mod vm_common;
 

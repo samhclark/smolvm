@@ -27,10 +27,6 @@ enum Commands {
     #[command(subcommand, visible_alias = "vm")]
     Machine(cli::machine::MachineCmd),
 
-    /// Start the HTTP API server for programmatic control
-    #[command(subcommand)]
-    Serve(cli::serve::ServeCmd),
-
     /// Package and run self-contained VM executables
     #[command(subcommand)]
     Pack(cli::pack::PackCmd),
@@ -79,7 +75,6 @@ fn main() {
     // Note: orphan cleanup is handled per-command (skipped for ephemeral `machine run`).
     let result = match cli.command {
         Commands::Machine(cmd) => cmd.run(),
-        Commands::Serve(cmd) => cmd.run(),
         Commands::Pack(cmd) => cmd.run(),
         Commands::Config(cmd) => cmd.run(),
         Commands::BootVm { config } => cli::internal_boot::run(config),
