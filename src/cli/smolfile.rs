@@ -2,7 +2,7 @@
 //!
 //! Types and parsing live in [`smolvm::smolfile`]. This module provides
 //! the merge logic that combines Smolfile values with CLI arguments
-//! to produce [`CreateVmParams`] and [`PackConfig`].
+//! to produce [`CreateVmParams`].
 
 use crate::cli::parsers::parse_cidr;
 use crate::cli::vm_common::CreateVmParams;
@@ -86,7 +86,6 @@ pub fn build_create_params(
                 gpu: false,
                 gpu_vram_mib: None,
                 dns_filter_hosts: None,
-                source_smolmachine: None,
             });
         }
     };
@@ -280,147 +279,6 @@ pub fn build_create_params(
         } else {
             Some(sf_allow_hosts)
         },
-        source_smolmachine: None,
     })
 }
 
-/// Resolved pack configuration from Smolfile + CLI args.
-pub struct PackConfig {
-    /// Resolved image.
-    pub image: Option<String>,
-    /// Resolved entrypoint.
-    pub entrypoint: Vec<String>,
-    /// Resolved cmd.
-    pub cmd: Vec<String>,
-    /// Resolved vCPU count.
-    pub cpus: u8,
-    /// Resolved memory in MiB.
-    pub mem: u32,
-    /// Target OCI platform.
-    pub oci_platform: Option<String>,
-    /// Resolved environment variables.
-    pub env: Vec<String>,
-    /// Resolved working directory.
-    pub workdir: Option<String>,
-    /// Whether outbound networking is enabled.
-    /// `None` = unspecified (caller decides default), `Some(true)` = explicitly
-    /// enabled, `Some(false)` = explicitly disabled. This tri-state is needed
-    /// so `--from-vm` can distinguish "Smolfile says net = false" from "no
-    /// Smolfile, fall back to source VM's setting".
-    pub net: Option<bool>,
-    /// Whether GPU acceleration is enabled in the packed VM.
-    pub gpu: bool,
-    /// Secrets carried into the pack manifest as references. They are resolved
-    /// to plaintext on the run host at exec time and are never packed as
-    /// values.
-    pub secret_refs: std::collections::BTreeMap<String, smolvm::secrets::SecretRef>,
-}
-
-/// Resolve pack configuration by merging CLI flags with an optional Smolfile.
-///
-/// Merge precedence:
-///   image:        CLI --image > Smolfile image > None
-///   entrypoint:   CLI --entrypoint > [artifact].entrypoint > Smolfile entrypoint > image metadata
-///   cmd:          [artifact].cmd > Smolfile cmd > image metadata
-///   cpus:         CLI --cpus (non-default) > [artifact].cpus > Smolfile cpus > default
-///   memory:       CLI --mem (non-default) > [artifact].memory > Smolfile memory > default
-///   oci_platform: CLI --oci-platform > [artifact].oci_platform > None
-///   env:          Smolfile top-level env (trimmed)
-///   workdir:      Smolfile top-level workdir
-///   gpu:          CLI --gpu (true overrides) > Smolfile gpu > false
-pub fn resolve_pack_config(
-    cli_image: Option<String>,
-    cli_entrypoint: Option<String>,
-    cli_cpus: u8,
-    cli_mem: u32,
-    cli_oci_platform: Option<String>,
-    cli_gpu: bool,
-    smolfile_path: Option<PathBuf>,
-) -> smolvm::Result<PackConfig> {
-    let default_cpus = DEFAULT_MICROVM_CPU_COUNT;
-    let default_mem = crate::cli::pack::PACK_DEFAULT_MEMORY_MIB;
-    let sf = match smolfile_path {
-        Some(path) => load(&path)?,
-        None => {
-            return Ok(PackConfig {
-                image: cli_image,
-                entrypoint: cli_entrypoint.map(|e| vec![e]).unwrap_or_default(),
-                cmd: vec![],
-                cpus: cli_cpus,
-                mem: cli_mem,
-                oci_platform: cli_oci_platform,
-                env: vec![],
-                workdir: None,
-                net: None,
-                gpu: cli_gpu,
-                secret_refs: Default::default(),
-            });
-        }
-    };
-
-    // Resolve [artifact] (preferred) or [pack] (alias)
-    let artifact = sf.artifact.or(sf.pack).unwrap_or_default();
-
-    // Image: CLI > Smolfile top-level
-    let image = cli_image.or(sf.image);
-
-    // Entrypoint: CLI > [artifact] > top-level
-    let entrypoint = if let Some(ep) = cli_entrypoint {
-        vec![ep]
-    } else if !artifact.entrypoint.is_empty() {
-        artifact.entrypoint
-    } else {
-        sf.entrypoint
-    };
-
-    // Cmd: [artifact] > top-level
-    let cmd = if !artifact.cmd.is_empty() {
-        artifact.cmd
-    } else {
-        sf.cmd
-    };
-
-    // Scalars: CLI non-default > [artifact] > top-level > default
-    let cpus = if cli_cpus != default_cpus {
-        cli_cpus
-    } else {
-        artifact.cpus.or(sf.cpus).unwrap_or(cli_cpus)
-    };
-
-    let mem = if cli_mem != default_mem {
-        cli_mem
-    } else {
-        artifact.memory.or(sf.memory).unwrap_or(cli_mem)
-    };
-
-    // oci_platform: CLI > [artifact]
-    let oci_platform = cli_oci_platform.or(artifact.oci_platform);
-
-    Ok(PackConfig {
-        image,
-        entrypoint,
-        cmd,
-        cpus,
-        mem,
-        oci_platform,
-        env: sf.env.into_iter().map(|e| e.trim().to_string()).collect(),
-        workdir: sf.workdir,
-        // [network].allow_hosts / allow_cidrs implies net = true,
-        // matching the same logic in build_create_params().
-        // Preserve the tri-state: None = unspecified, Some = explicit.
-        net: {
-            let network_section_implies_net = sf
-                .network
-                .as_ref()
-                .is_some_and(|n| !n.allow_hosts.is_empty() || !n.allow_cidrs.is_empty());
-            if network_section_implies_net {
-                Some(true)
-            } else {
-                sf.net // None if key absent, Some(true/false) if explicit
-            }
-        },
-        // CLI --gpu wins; Smolfile gpu = true also enables it.
-        gpu: cli_gpu || sf.gpu.unwrap_or(false),
-        secret_refs: sf.secrets,
-    })
-}

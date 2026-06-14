@@ -157,10 +157,9 @@ fn classify_file_source_error(e: FileSourceError) -> ResolutionFailure {
 /// Both source kinds dereference *this host's* environment / filesystem,
 /// so they are only meaningful for a trusted-local actor (the CLI running
 /// as the host user) or for refs that actor persisted earlier
-/// (`RecordReplay`). An `Untrusted` surface — an HTTP request body or a
-/// portable `.smolmachine` pack authored elsewhere — must not be able to
-/// read this host's env (`from_env`) or files (`from_file`), so it can
-/// carry no resolvable secret at all.
+/// (`RecordReplay`). An `Untrusted` surface — e.g. an HTTP request body —
+/// must not be able to read this host's env (`from_env`) or files (`from_file`),
+/// so it can carry no resolvable secret at all.
 ///
 /// Callers must call [`validate_ref`] before acting on a ref received
 /// from any source.

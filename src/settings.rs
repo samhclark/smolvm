@@ -4,15 +4,8 @@
 //!
 //! ```toml
 //! [cloud]
-//! endpoint = "https://api.smolmachines.com"
+//! endpoint = "https://api.smolfleet.com"
 //! api_key = "smk_live_abc123"
-//!
-//! [machines.defaults]
-//! registry = "registry.smolmachines.com"
-//!
-//! [machines.registries."registry.smolmachines.com"]
-//! username = "token"
-//! password = "eyJ..."
 //!
 //! [images.defaults]
 //! registry = "docker.io"
@@ -23,7 +16,6 @@
 //! ```
 //!
 //! - `[cloud]` — smolfleet API credentials
-//! - `[machines]` — credentials for OCI registries storing .smolmachine artifacts
 //! - `[images]` — credentials for container image registries (base images for VMs)
 
 use crate::error::{Error, Result};
@@ -37,9 +29,6 @@ pub struct SmolSettings {
     /// smolfleet API configuration.
     #[serde(default)]
     pub cloud: CloudSection,
-    /// Credentials for .smolmachine artifact registries.
-    #[serde(default)]
-    pub machines: RegistryConfig,
     /// Credentials for container image registries.
     #[serde(default)]
     pub images: RegistryConfig,
@@ -48,7 +37,7 @@ pub struct SmolSettings {
 /// smolfleet API configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CloudSection {
-    /// smolfleet API endpoint (e.g., "https://api.smolmachines.com").
+    /// smolfleet API endpoint.
     pub endpoint: Option<String>,
     /// API key for authentication (e.g., "smk_..." or a JWT).
     pub api_key: Option<String>,
@@ -111,7 +100,6 @@ impl SmolSettings {
 
             tracing::debug!(
                 path = %config_path.display(),
-                machines_count = settings.machines.registries.len(),
                 images_count = settings.images.registries.len(),
                 "loaded settings"
             );
@@ -250,18 +238,14 @@ mod tests {
         let settings = SmolSettings::default();
         assert!(settings.cloud.endpoint.is_none());
         assert!(settings.cloud.api_key.is_none());
-        assert!(settings.machines.registries.is_empty());
         assert!(settings.images.registries.is_empty());
     }
 
     #[test]
     fn settings_roundtrip_toml() {
         let mut settings = SmolSettings::default();
-        settings.cloud.endpoint = Some("https://api.smolmachines.com".to_string());
+        settings.cloud.endpoint = Some("https://api.smolfleet.com".to_string());
         settings.cloud.api_key = Some("smk_test".to_string());
-        settings
-            .machines
-            .set_token("registry.smolmachines.com", "eyJhbGci.test");
         settings.images.registries.insert(
             "docker.io".to_string(),
             crate::registry::RegistryEntry {
@@ -280,16 +264,9 @@ mod tests {
 
         assert_eq!(
             reloaded.cloud.endpoint.as_deref(),
-            Some("https://api.smolmachines.com")
+            Some("https://api.smolfleet.com")
         );
         assert_eq!(reloaded.cloud.api_key.as_deref(), Some("smk_test"));
-
-        let machine_creds = reloaded
-            .machines
-            .get_credentials("registry.smolmachines.com")
-            .unwrap();
-        assert_eq!(machine_creds.username, "token");
-        assert_eq!(machine_creds.password, "eyJhbGci.test");
 
         let image_entry = reloaded.images.registries.get("docker.io").unwrap();
         assert_eq!(image_entry.username.as_deref(), Some("user"));
@@ -300,15 +277,8 @@ mod tests {
     fn settings_parses_target_format() {
         let toml_str = r#"
 [cloud]
-endpoint = "https://api.smolmachines.com"
+endpoint = "https://api.smolfleet.com"
 api_key = "smk_live_abc123"
-
-[machines.defaults]
-registry = "registry.smolmachines.com"
-
-[machines.registries."registry.smolmachines.com"]
-username = "token"
-password = "eyJhbGci..."
 
 [images.defaults]
 registry = "docker.io"
@@ -326,13 +296,9 @@ mirror = "ghcr-mirror.example.com"
         let settings: SmolSettings = toml::from_str(toml_str).unwrap();
         assert_eq!(
             settings.cloud.endpoint.as_deref(),
-            Some("https://api.smolmachines.com")
+            Some("https://api.smolfleet.com")
         );
         assert_eq!(settings.cloud.api_key.as_deref(), Some("smk_live_abc123"));
-        assert_eq!(
-            settings.machines.default_registry(),
-            "registry.smolmachines.com"
-        );
         assert_eq!(settings.images.default_registry(), "docker.io");
         assert_eq!(settings.images.registries.len(), 2);
 
@@ -447,7 +413,7 @@ api_key = "env-override-key"
     #[test]
     fn registry_entry_refresh_fields_roundtrip() {
         let toml_str = r#"
-[machines.registries."registry.smolmachines.com"]
+[images.registries."registry.example.com"]
 username = "token"
 password = "access123"
 refresh_token = "refresh456"
@@ -456,9 +422,9 @@ expires_at = 1700000000
 
         let settings: SmolSettings = toml::from_str(toml_str).unwrap();
         let entry = settings
-            .machines
+            .images
             .registries
-            .get("registry.smolmachines.com")
+            .get("registry.example.com")
             .unwrap();
         assert_eq!(entry.refresh_token.as_deref(), Some("refresh456"));
         assert_eq!(entry.expires_at, Some(1700000000));

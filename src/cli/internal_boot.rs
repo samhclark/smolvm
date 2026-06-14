@@ -176,9 +176,6 @@ pub fn run(config_path: PathBuf) -> smolvm::Result<()> {
         .map(std::path::PathBuf::from)
         .collect();
         read_exec.push(config.rootfs_path.clone());
-        if let Some(ref d) = config.packed_layers_dir {
-            read_exec.push(d.clone());
-        }
         if let Some(libdir) = std::env::var_os("SMOLVM_LIB_DIR") {
             read_exec.push(std::path::PathBuf::from(libdir));
         }
@@ -343,7 +340,6 @@ pub fn run(config_path: PathBuf) -> smolvm::Result<()> {
         resources: config.resources,
         ssh_agent_socket: config.ssh_agent_socket.as_deref(),
         dns_filter_socket: dns_filter_socket_path.as_deref(),
-        packed_layers_dir: config.packed_layers_dir.as_deref(),
         extra_disks: &config.extra_disks,
         dns_filter_enabled: config
             .dns_filter_hosts

@@ -66,24 +66,6 @@ fn main() {
     // -weak-lkrun) — gate every emission on the actual compile target.
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os == "macos" {
-        // On macOS, create a placeholder __SMOLVM,__smolvm Mach-O section.
-        // This section is replaced with real data by `smolvm pack --single-file`.
-        // The placeholder marker is NOT the SMOLSECT magic, so detect.rs won't
-        // false-positive on a normal smolvm binary.
-        #[cfg(target_os = "macos")]
-        {
-            use std::io::Write;
-            let out_dir = std::env::var("OUT_DIR").unwrap();
-            let placeholder_path = format!("{}/smolvm_placeholder.bin", out_dir);
-            let mut f = std::fs::File::create(&placeholder_path).unwrap();
-            f.write_all(b"SMOLVM_SECTION_PLACEHOLDER_V1").unwrap();
-            f.write_all(&[0u8; 4]).unwrap();
-            println!(
-                "cargo:rustc-link-arg=-Wl,-sectcreate,__SMOLVM,__smolvm,{}",
-                placeholder_path
-            );
-        }
-
         #[cfg(target_os = "macos")]
         link_libkrun();
     }

@@ -4,8 +4,6 @@ pub mod cleanup_ephemeral;
 pub mod config;
 pub mod internal_boot;
 pub mod machine;
-pub mod pack;
-pub mod pack_run;
 pub mod parsers;
 pub mod proxy_opts;
 pub mod smolfile;

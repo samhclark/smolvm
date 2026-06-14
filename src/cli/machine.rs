@@ -293,17 +293,6 @@ pub struct RunCmd {
     #[arg(short = 'I', long, value_name = "IMAGE", value_parser = parse_image)]
     pub image: Option<String>,
 
-    /// Run a packed `.smolmachine` artifact ephemerally (the VM is discarded on
-    /// exit) — the one-shot equivalent of `machine create --from … + start`.
-    /// CPU/memory fall back to the artifact's baked manifest unless overridden.
-    #[arg(
-        long,
-        value_name = "PATH",
-        conflicts_with_all = ["image", "smolfile", "detach", "name", "gpu", "gpu_vram_mib", "oci_platform", "allow_cidr", "allow_host", "outbound_localhost_only", "secret_env", "secret_file"],
-        help_heading = "Machine source"
-    )]
-    pub from: Option<PathBuf>,
-
     /// Name a persistent machine when used with --detach.
     /// Matches the --name flag on start/stop/exec/status/resize. In foreground
     /// mode (no -d), --name is ignored with a warning.
@@ -458,35 +447,6 @@ pub struct RunCmd {
 impl RunCmd {
     pub fn run(self) -> smolvm::Result<()> {
         use smolvm::Error;
-
-        // `--from`: run a packed .smolmachine artifact ephemerally, reusing the
-        // proven pack-run path. Resource flags fall back to the artifact's baked
-        // manifest values (matching `machine create --from`); the remaining run
-        // flags pass through. Flags the sidecar runner can't honor are rejected
-        // at parse time via `conflicts_with_all` on `from`.
-        if let Some(from) = self.from {
-            return crate::cli::pack_run::PackRunCmd {
-                sidecar: Some(from),
-                command: self.command,
-                interactive: self.interactive,
-                tty: self.tty,
-                timeout: self.timeout,
-                workdir: self.workdir,
-                env: self.env,
-                volume: self.volume,
-                port: self.port,
-                net: self.net,
-                net_backend: self.net_backend,
-                cpus: (self.cpus != DEFAULT_MICROVM_CPU_COUNT).then_some(self.cpus),
-                mem: (self.mem != DEFAULT_MICROVM_MEMORY_MIB).then_some(self.mem),
-                storage: self.storage,
-                overlay: self.overlay,
-                force_extract: false,
-                info: false,
-                debug: false,
-            }
-            .run();
-        }
 
         let requested_name = self.name.clone();
         let vm_name = if self.detach {
@@ -665,7 +625,6 @@ impl RunCmd {
         let features = smolvm::agent::LaunchFeatures {
             ssh_agent_socket,
             dns_filter_hosts: params.dns_filter_hosts.clone(),
-            packed_layers_dir: None,
             extra_disks: Vec::new(),
         };
 
@@ -1636,11 +1595,6 @@ pub struct CreateCmd {
     #[arg(long = "smolfile", visible_short_alias = 's', value_name = "PATH")]
     pub smolfile: Option<PathBuf>,
 
-    /// Create machine from a packed .smolmachine artifact.
-    /// Uses pre-extracted layers instead of pulling from a registry.
-    #[arg(long, value_name = "PATH", conflicts_with_all = ["image", "smolfile"])]
-    pub from: Option<PathBuf>,
-
     /// Command to run as the machine's persistent workload (image machines).
     /// Launched as a detached container on every `start`, so it stays running
     /// (e.g. a pre-warmed browser to be forked). Without this, an image machine
@@ -1655,11 +1609,6 @@ pub struct CreateCmd {
 
 impl CreateCmd {
     pub fn run(self) -> smolvm::Result<()> {
-        // Branch for --from: create machine from .smolmachine artifact.
-        if let Some(ref sidecar_path) = self.from {
-            return self.run_from_smolmachine(sidecar_path);
-        }
-
         let (cli_allow_cidrs, net, cli_dns_filter_hosts) = resolve_egress_flags(
             self.allow_cidr,
             self.allow_host,
@@ -1739,173 +1688,6 @@ impl CreateCmd {
         vm_common::create_vm(params)
     }
 
-    /// Create a machine from a .smolmachine artifact.
-    fn run_from_smolmachine(&self, sidecar_path: &std::path::Path) -> smolvm::Result<()> {
-        use smolvm::data::resources::{DEFAULT_MICROVM_CPU_COUNT, DEFAULT_MICROVM_MEMORY_MIB};
-
-        if !sidecar_path.exists() {
-            return Err(smolvm::Error::config(
-                "create from .smolmachine",
-                format!("file not found: {}", sidecar_path.display()),
-            ));
-        }
-
-        // Read manifest from the sidecar to get image metadata.
-        let manifest = smolvm_pack::packer::read_manifest_from_sidecar(sidecar_path)
-            .map_err(|e| smolvm::Error::agent("read .smolmachine", e.to_string()))?;
-
-        // Read the footer now; the bundle is extracted into the machine's own
-        // data dir after `create_vm` succeeds (below), so a duplicate-name create
-        // cannot clobber an existing machine's layers.
-        let footer = smolvm_pack::packer::read_footer_from_sidecar(sidecar_path)
-            .map_err(|e| smolvm::Error::agent("read sidecar footer", e.to_string()))?;
-
-        // Resolve the canonical path for storage in VmRecord.
-        let canonical_path = sidecar_path
-            .canonicalize()
-            .unwrap_or_else(|_| sidecar_path.to_path_buf())
-            .to_string_lossy()
-            .into_owned();
-
-        let name = self
-            .name
-            .clone()
-            .unwrap_or_else(smolvm::util::generate_machine_name);
-        // `name` is moved into `params` below; keep a copy for the post-create
-        // extraction that targets this machine's own data dir.
-        let name_for_layers = name.clone();
-
-        // CLI flags override manifest defaults.
-        let cpus = if self.cpus != DEFAULT_MICROVM_CPU_COUNT {
-            self.cpus
-        } else {
-            manifest.cpus
-        };
-        let mem = if self.mem != DEFAULT_MICROVM_MEMORY_MIB {
-            self.mem
-        } else {
-            manifest.mem
-        };
-
-        // A .smolmachine is an untrusted, portable artifact: validate its secret
-        // refs under the Untrusted scope, which rejects every source kind. A
-        // packed `from_env`/`from_file` ref would otherwise read THIS host's
-        // env/files at exec time — reject at create rather than carry an exfil
-        // primitive. Configure secrets locally via the CLI instead.
-        for (key, r) in &manifest.secret_refs {
-            smolvm::secrets::validate_ref(r, smolvm::secrets::ResolutionScope::Untrusted).map_err(
-                |e| {
-                    smolvm::Error::config(
-                        "create from .smolmachine",
-                        format!("secret '{}': {} (packs may not carry secret refs)", key, e),
-                    )
-                },
-            )?;
-        }
-
-        let params = vm_common::CreateVmParams {
-            secret_refs: manifest.secret_refs,
-            name,
-            image: Some(manifest.image),
-            entrypoint: manifest.entrypoint,
-            cmd: manifest.cmd,
-            cpus,
-            mem,
-            volume: self.volume.clone(),
-            port: self.port.clone(),
-            net: self.net || manifest.network,
-            network_backend: self.net_backend,
-            init: self.init.clone(),
-            env: {
-                let mut env = manifest.env;
-                env.extend(self.env.iter().cloned());
-                env
-            },
-            workdir: manifest.workdir,
-            storage_gb: self.storage,
-            overlay_gb: self.overlay,
-            allowed_cidrs: None,
-            restart_policy: None,
-            restart_max_retries: None,
-            restart_max_backoff_secs: None,
-            health_cmd: None,
-            health_interval_secs: None,
-            health_timeout_secs: None,
-            health_retries: None,
-            health_startup_grace_secs: None,
-            ssh_agent: self.ssh_agent,
-            dns_filter_hosts: None,
-            gpu: manifest.gpu,
-            gpu_vram_mib: None,
-            source_smolmachine: Some(canonical_path),
-        };
-
-        let record = vm_common::build_vm_record(&params)?;
-        let reservation = vm_common::CreateVmReservation::reserve(&name_for_layers)?;
-
-        // Create the machine data dir while the DB reservation is held, then
-        // extract before publishing the VM row. Other processes either see the
-        // reservation conflict or the finished VM, never a half-created record.
-        let create_result = (|| -> smolvm::Result<()> {
-            let _manager = AgentManager::for_vm_with_sizes(
-                &name_for_layers,
-                params.storage_gb,
-                params.overlay_gb,
-            )?;
-
-            let cache_dir = smolvm::agent::machine_layers_cache_dir(&name_for_layers);
-            smolvm_pack::extract::force_detach_layers_volume(&cache_dir);
-            match std::fs::remove_dir_all(&cache_dir) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    return Err(smolvm::Error::agent(
-                        "clear packed layers cache",
-                        e.to_string(),
-                    ));
-                }
-            }
-
-            println!("Extracting .smolmachine assets...");
-            let result = smolvm_pack::extract::extract_sidecar(
-                sidecar_path,
-                &cache_dir,
-                &footer,
-                false,
-                false,
-            )
-            .map_err(|e| smolvm::Error::agent("extract sidecar", e.to_string()));
-            // Detach unconditionally: extraction mounts the case-sensitive volume on
-            // macOS even when it later fails, so the detach must run on both success
-            // and failure paths to honor the "mounted iff running" invariant.
-            smolvm_pack::extract::force_detach_layers_volume(&cache_dir);
-            result?;
-
-            reservation.commit(&record)?;
-            Ok(())
-        })();
-
-        if let Err(e) = create_result {
-            smolvm_pack::extract::force_detach_layers_volume(
-                &smolvm::agent::machine_layers_cache_dir(&name_for_layers),
-            );
-            let data_dir = smolvm::agent::vm_data_dir(&name_for_layers);
-            if let Err(remove_err) = std::fs::remove_dir_all(&data_dir) {
-                if remove_err.kind() != std::io::ErrorKind::NotFound {
-                    tracing::warn!(
-                        machine = %name_for_layers,
-                        dir = %data_dir.display(),
-                        error = %remove_err,
-                        "failed to remove machine data dir after create failure"
-                    );
-                }
-            }
-            return Err(e);
-        }
-
-        vm_common::print_create_success(&params);
-        Ok(())
-    }
 }
 
 // ============================================================================

@@ -57,15 +57,6 @@ impl ShowCmd {
         }
 
         println!();
-        println!("  [machines] (smolmachine artifact registries):");
-        println!("    Default: {}", settings.machines.default_registry());
-        println!("    Configured: {}", settings.machines.registries.len());
-        for (name, entry) in &settings.machines.registries {
-            let auth_status = format_auth_status(entry);
-            println!("      {}: {}", name, auth_status);
-        }
-
-        println!();
         println!("  [images] (container image registries):");
         println!("    Default: {}", settings.images.default_registry());
         println!("    Configured: {}", settings.images.registries.len());
@@ -154,8 +145,7 @@ impl RegistriesCmd {
                 match SmolSettings::load() {
                     Ok(settings) => {
                         println!(
-                            "Configuration valid: {} machine registries, {} image registries configured",
-                            settings.machines.registries.len(),
+                            "Configuration valid: {} image registries configured",
                             settings.images.registries.len(),
                         );
                     }
@@ -168,10 +158,9 @@ impl RegistriesCmd {
             }
             RegistriesCmd::Show => {
                 let settings = SmolSettings::load().unwrap_or_default();
-                let has_machines = !settings.machines.registries.is_empty();
                 let has_images = !settings.images.registries.is_empty();
 
-                if !has_machines && !has_images {
+                if !has_images {
                     println!("No registries configured.");
                     if let Ok(path) = SmolSettings::config_path() {
                         println!();
@@ -181,16 +170,7 @@ impl RegistriesCmd {
                     return Ok(());
                 }
 
-                if has_machines {
-                    println!("[machines] (smolmachine artifact registries):");
-                    println!();
-                    print_registry_entries(&settings.machines.registries);
-                }
-
                 if has_images {
-                    if has_machines {
-                        println!();
-                    }
                     println!("[images] (container image registries):");
                     println!();
                     print_registry_entries(&settings.images.registries);
@@ -259,22 +239,14 @@ const EXAMPLE_CONFIG: &str = r#"# smolvm Configuration
 # Location: ~/.config/smolvm/config.toml
 #
 # [cloud]        — smolfleet API settings
-# [machines]     — credentials for .smolmachine artifact registries
 # [images]       — credentials for container image registries (base images for VMs)
 #
 # For security, use password_env to reference environment variables
 # instead of storing passwords directly in this file.
 
 # [cloud]
-# endpoint = "https://api.smolmachines.com"
+# endpoint = "https://api.smolfleet.com"
 # api_key = "smk_..."
-
-# [machines.defaults]
-# registry = "registry.smolmachines.com"
-
-# [machines.registries."registry.smolmachines.com"]
-# username = "token"
-# password = "your-jwt-token"
 
 # [images.defaults]
 # registry = "docker.io"
