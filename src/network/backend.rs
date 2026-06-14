@@ -19,7 +19,6 @@ pub const TSI_FEATURE_HIJACK_INET: u32 = 1 << 0;
     serde::Serialize,
     serde::Deserialize,
     ValueEnum,
-    utoipa::ToSchema,
 )]
 #[serde(rename_all = "kebab-case")]
 pub enum NetworkBackend {

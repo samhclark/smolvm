@@ -62,7 +62,6 @@
 #![warn(clippy::all)]
 
 pub mod agent;
-pub mod api;
 pub mod config;
 /// Canonical shared data models and constants used across adapters.
 pub mod data;
@@ -72,7 +71,6 @@ pub mod dns_filter;
 pub mod dns_filter_listener;
 /// Language-neutral embedded runtime support shared by SDK adapters.
 pub mod embedded;
-pub mod log_rotation;
 pub mod network;
 pub mod platform;
 pub mod process;
@@ -106,7 +104,6 @@ pub const DEFAULT_IDLE_CMD: &[&str] = &["sleep", "infinity"];
 
 // Re-export main types for convenience
 pub use agent::{AgentClient, AgentManager};
-pub use api::ApiDoc;
 pub use config::{RecordState, RestartConfig, RestartPolicy, SmolvmConfig, VmRecord};
 pub use data::resources::VmResources;
 pub use data::storage::HostMount;

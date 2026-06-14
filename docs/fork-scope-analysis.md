@@ -86,11 +86,19 @@ avoids fighting its coupling to `embedded` and `pack` later.
 **Steps**
 1. Delete directories/files:
    - `src/api/` (whole directory)
-   - `src/cli/serve.rs`, `src/cli/serve_tls.rs`, `src/cli/openapi.rs`,
-     `src/cli/proxy_opts.rs`
+   - `src/cli/serve.rs`, `src/cli/serve_tls.rs`, `src/cli/openapi.rs`
+   - **Do NOT delete `src/cli/proxy_opts.rs`** — despite appearing in the
+     original delete list, `ProxyOpts` is used by `machine.rs` and `pack.rs`
+     for `--proxy`/`--no-proxy` image-pull flags. It is shared infrastructure,
+     not serve-only. Verified: `grep -rn "proxy_opts\|ProxyOpts"
+     src/cli/machine.rs src/cli/pack.rs` shows active usage.
 2. Delete serve-only top-level modules **after** confirming they're unreferenced
    by kept code (run the grep gate below for each before deleting):
-   - `src/systemd_scope.rs`, `src/log_rotation.rs`, `src/dns_filter_listener.rs`
+   - `src/log_rotation.rs` (safe to delete — only `src/lib.rs` pub mod declaration)
+   - **Do NOT delete `src/systemd_scope.rs`** — referenced by
+     `src/agent/manager.rs` (`crate::systemd_scope::adopt_into_scope`).
+   - **Do NOT delete `src/dns_filter_listener.rs`** — referenced by
+     `src/cli/internal_boot.rs` (`smolvm::dns_filter_listener::start`).
    - Grep gate per file, e.g.:
      `grep -rn "systemd_scope\|log_rotation\|dns_filter_listener" src --include=*.rs | grep -v -E "src/(api/|cli/serve|systemd_scope|log_rotation|dns_filter_listener)"`
      If this prints a reference from `agent/`, `vm/`, `cli/machine.rs`, or
@@ -99,9 +107,9 @@ avoids fighting its coupling to `embedded` and `pack` later.
    `Serve(cli::serve::ServeCmd)` enum variant, and its `Commands::Serve(cmd) =>
    cmd.run()` match arm.
 4. Edit `src/cli/mod.rs`: remove `pub mod serve; pub mod serve_tls; pub mod
-   openapi; pub mod proxy_opts;`.
-5. Edit `src/lib.rs`: remove `pub mod api;` and the `pub use api::ApiDoc;`
-   re-export.
+   openapi;` (keep `pub mod proxy_opts;` — shared with machine and pack).
+5. Edit `src/lib.rs`: remove `pub mod api;`, `pub mod log_rotation;`, and the
+   `pub use api::ApiDoc;` re-export.
 6. Run `cargo build` and fix every remaining reference the compiler reports
    (these will be `crate::api::…` / `smolvm::api::…` / `ApiDoc` usages). Expect a
    few in `src/cli/` and possibly `data/`.
