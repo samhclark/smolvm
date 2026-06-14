@@ -27,10 +27,6 @@ enum Commands {
     #[command(subcommand, visible_alias = "vm")]
     Machine(cli::machine::MachineCmd),
 
-    /// Package and run self-contained VM executables
-    #[command(subcommand)]
-    Pack(cli::pack::PackCmd),
-
     /// Manage smolvm configuration (registries, defaults)
     #[command(subcommand)]
     Config(cli::config::ConfigCmd),
@@ -57,13 +53,6 @@ enum Commands {
 }
 
 fn main() {
-    // Auto-detect packed binary mode BEFORE parsing the normal CLI.
-    // If this executable has a `.smolmachine` sidecar, appended assets,
-    // or a Mach-O section with packed data, run as a packed binary instead.
-    if let Some(mode) = smolvm_pack::detect_packed_mode() {
-        cli::pack_run::run_as_packed_binary(mode);
-    }
-
     let cli = Cli::parse();
 
     // Initialize logging based on RUST_LOG or default to warn
@@ -75,7 +64,6 @@ fn main() {
     // Note: orphan cleanup is handled per-command (skipped for ephemeral `machine run`).
     let result = match cli.command {
         Commands::Machine(cmd) => cmd.run(),
-        Commands::Pack(cmd) => cmd.run(),
         Commands::Config(cmd) => cmd.run(),
         Commands::BootVm { config } => cli::internal_boot::run(config),
         Commands::CleanupEphemeral {

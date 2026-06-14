@@ -49,9 +49,6 @@ pub struct BootConfig {
     /// listener and the guest agent proxies DNS queries through it.
     #[serde(default)]
     pub dns_filter_hosts: Option<Vec<String>>,
-    /// Pre-extracted OCI layers directory for .smolmachine-sourced machines.
-    #[serde(default)]
-    pub packed_layers_dir: Option<PathBuf>,
     /// Additional disk images to attach (path, read_only).
     #[serde(default)]
     pub extra_disks: Vec<(PathBuf, bool)>,

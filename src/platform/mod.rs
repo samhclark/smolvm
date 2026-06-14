@@ -170,8 +170,7 @@ impl Platform {
 
     /// OCI platform string for the **host** (e.g., "darwin/arm64").
     ///
-    /// Used for registry Image Index resolution — tells the registry which
-    /// host OS+arch this `.smolmachine` runs on. Distinct from `oci_platform()`
+    /// Used for registry Image Index resolution. Distinct from `oci_platform()`
     /// which always returns `linux/*` (the guest).
     pub const fn host_oci_platform(&self) -> &'static str {
         match (self.os, self.arch) {

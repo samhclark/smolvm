@@ -1,8 +1,8 @@
-//! Dynamic (dlopen-based) libkrun launcher for packed/sidecar mode.
+//! Dynamic (dlopen-based) libkrun launcher.
 //!
 //! This module provides a `KrunFunctions` struct that loads libkrun via `dlopen`
-//! at runtime, enabling the main smolvm binary to boot VMs using libraries
-//! extracted from a `.smolmachine` sidecar file.
+//! at runtime, enabling the main smolvm binary to boot VMs using dynamically
+//! located libraries.
 //!
 //! The static FFI path in `launcher.rs` remains untouched for normal operations.
 
@@ -359,11 +359,6 @@ pub fn launch_agent_vm_dynamic(
         cstr("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"),
         cstr("TERM=xterm-256color"),
     ];
-
-    // Tell agent about packed layers mount
-    if config.layers_dir.exists() {
-        env_strings.push(cstr("SMOLVM_PACKED_LAYERS=smolvm_layers:/packed_layers"));
-    }
 
     // Pass mount info to the agent via environment
     for (i, mount) in config.mounts.iter().enumerate() {

@@ -473,12 +473,6 @@ pub struct VmRecord {
     #[serde(default)]
     pub ephemeral: bool,
 
-    /// Absolute path to the .smolmachine sidecar this machine was created from.
-    /// When set, `machine start` extracts layers from the sidecar and mounts
-    /// them via virtiofs instead of pulling the image from a registry.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_smolmachine: Option<String>,
-
     /// Name of the golden VM this machine was forked from, if any. A clone's
     /// block disks are copy-on-write overlays backed by the golden's disks, so
     /// the golden must outlive its clones. The disk *format* is not recorded
@@ -561,7 +555,6 @@ impl VmRecord {
             ssh_agent: false,
             dns_filter_hosts: None,
             ephemeral: false,
-            source_smolmachine: None,
             golden: None,
         }
     }
@@ -612,7 +605,6 @@ impl VmRecord {
             ssh_agent: false,
             dns_filter_hosts: None,
             ephemeral: false,
-            source_smolmachine: None,
             golden: None,
         }
     }
