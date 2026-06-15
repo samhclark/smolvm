@@ -218,37 +218,10 @@ test_machine_create_virtio_net_policy_rejected() {
     }
 }
 
-test_pack_run_virtio_net_works() {
-    local output_path="$TEST_DIR/virtio-pack"
-    local output
-    local script
-    script=$(virtio_guest_probe_script)
-
-    if [[ ! -f "$output_path.smolmachine" ]]; then
-        $SMOLVM pack create --image "$VIRTIO_TEST_IMAGE" -o "$output_path" >/dev/null 2>&1 || {
-            echo "expected pack create to succeed before pack run"
-            return 1
-        }
-    fi
-
-    output=$($SMOLVM pack run --sidecar "$output_path.smolmachine" --net --net-backend virtio-net -- sh -c "$script" 2>&1) || {
-        echo "virtio-net pack run probe failed"
-        echo "$output"
-        return 1
-    }
-
-    [[ "$output" == *"virtio-net-ok"* ]] || {
-        echo "expected pack run virtio-net probe to finish successfully"
-        echo "$output"
-        return 1
-    }
-}
-
 run_test "Machine create: virtio-net works" test_machine_create_virtio_net_works || true
 run_test "Machine create/start/exec: virtio-net guest networking works" test_machine_create_start_exec_virtio_net_works || true
 run_test "Machine run: virtio-net guest networking works" test_machine_run_virtio_net_works || true
 run_test "Machine run: virtio-net published TCP ports work" test_machine_run_virtio_net_port_publishing_works || true
 run_test "Machine create: virtio-net + policy rejected" test_machine_create_virtio_net_policy_rejected || true
-run_test "Pack run: virtio-net guest networking works" test_pack_run_virtio_net_works || true
 
 print_summary "Virtio-Net Tests"

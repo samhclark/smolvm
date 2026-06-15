@@ -78,8 +78,7 @@ test_machine_ls_does_not_kill_vm() {
 
 test_named_vm_survives_ls() {
     skip_if_slow && return 0
-    # Same regression test but with a named VM — the customer's exact scenario:
-    # machine create --name X --from .smolmachine → machine start → machine ls shows stopped.
+    # Same regression test but with a named VM.
     # Verify over 60 seconds with interleaved ls + exec.
     local name="ls-probe-test"
     $SMOLVM machine stop --name "$name" 2>/dev/null || true

@@ -31,8 +31,9 @@ test_help() {
     local output
     output=$($SMOLVM --help 2>&1)
     [[ "$output" == *"machine"* ]] && \
-    [[ "$output" == *"container"* ]] && \
-    [[ "$output" == *"pack"* ]]
+    [[ "$output" == *"config"* ]] && \
+    ! [[ "$output" == *"pack"* ]] && \
+    ! [[ "$output" == *"serve"* ]]
 }
 
 test_machine_help() {
@@ -63,16 +64,21 @@ test_no_container_command() {
     [[ $exit_code -ne 0 ]]
 }
 
-test_pack_help() {
-    local output
-    output=$($SMOLVM pack create --help 2>&1)
-    [[ "$output" == *"--oci-platform"* ]] && \
-    [[ "$output" == *"--output"* ]]
-}
-
 # =============================================================================
 # Removed Commands
 # =============================================================================
+
+test_no_pack_command() {
+    local exit_code=0
+    $SMOLVM pack --help 2>&1 || exit_code=$?
+    [[ $exit_code -ne 0 ]]
+}
+
+test_no_serve_command() {
+    local exit_code=0
+    $SMOLVM serve --help 2>&1 || exit_code=$?
+    [[ $exit_code -ne 0 ]]
+}
 
 
 # =============================================================================
@@ -125,7 +131,8 @@ run_test "Help command" test_help || true
 run_test "Machine help" test_machine_help || true
 run_test "Machine run help" test_machine_run_help || true
 run_test "No container command" test_no_container_command || true
-run_test "Pack help" test_pack_help || true
+run_test "No pack command" test_no_pack_command || true
+run_test "No serve command" test_no_serve_command || true
 run_test "vm alias works" test_vm_alias || true
 run_test "Invalid subcommand fails" test_invalid_subcommand || true
 run_test "Machine create flags" test_machine_create_flags || true

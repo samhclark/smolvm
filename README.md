@@ -13,9 +13,7 @@ smolvm
 
 Ship and run software with isolation by default.
 
-This is a CLI tool that lets you:
-1. Manage and run custom Linux virtual machines locally with: sub-second cold start, cross-platform (macOS, Linux), elastic memory usage.
-2. Pack a stateful virtual machine into a single file (.smolmachine) to rehydrate on any supported platform.
+This is a CLI tool that lets you manage and run custom Linux virtual machines locally with: sub-second cold start, cross-platform (macOS, Linux), elastic memory usage.
 
 Install
 -------
@@ -60,14 +58,6 @@ smolvm machine run --net --image alpine --allow-host registry.npmjs.org -- wget 
 # fails — not in allow list
 ```
 
-**Pack into portable executables** — turn any workload into a self-contained binary. All dependencies are pre-baked — no install step, no runtime downloads, boots in <200ms.
-
-```bash
-smolvm pack create --image python:3.12-alpine -o ./python312
-./python312 run -- python3 --version
-# Python 3.12.x — isolated, no pyenv/venv/conda needed
-```
-
 **Persistent machines for development** — create, stop, start. Installed packages survive restarts.
 
 ```bash
@@ -110,12 +100,12 @@ smolvm machine create --name myvm -s Smolfile
 smolvm machine start --name myvm
 ```
 
-More examples: [python](https://github.com/smol-machines/smolvm/tree/main/examples/python-app) · [node](https://github.com/smol-machines/smolvm/tree/main/examples/node-app) · [doom](https://github.com/smol-machines/smolvm/tree/main/examples/doom-web)
+More Smolfile examples: [python](https://github.com/smol-machines/smolvm/tree/main/examples/python-app) · [node](https://github.com/smol-machines/smolvm/tree/main/examples/node-app) · [doom](https://github.com/smol-machines/smolvm/tree/main/examples/doom-web)
 
 How It Works
 ------------
 
-Each workload gets real hardware isolation — its own kernel on [Hypervisor.framework](https://developer.apple.com/documentation/hypervisor) (macOS) or KVM (Linux). [libkrun](https://github.com/containers/libkrun) VMM with custom kernel: [libkrunfw](https://github.com/smol-machines/libkrunfw). Pack it into a `.smolmachine` and it runs anywhere the host architecture matches, with zero dependencies.
+Each workload gets real hardware isolation — its own kernel on [Hypervisor.framework](https://developer.apple.com/documentation/hypervisor) (macOS) or KVM (Linux). [libkrun](https://github.com/containers/libkrun) VMM with custom kernel: [libkrunfw](https://github.com/smol-machines/libkrunfw).
 
 Images use the [OCI](https://opencontainers.org/) format — the same open standard Docker uses. Any image on Docker Hub, ghcr.io, or other OCI registries can be pulled and booted as a microVM. No Docker daemon required.
 
@@ -131,8 +121,6 @@ Comparison
 | Architecture        | Library (libkrun) | Daemon | Daemon (in VM) | Process | Process | Runtime stack |
 | Per-workload VMs    | Yes | No | No (shared) | Yes | Yes | Yes |
 | macOS native        | Yes | Via Docker VM | Yes (krunkit) | Yes | No | No |
-| Embeddable SDK      | Yes | No | No | No | No | No |
-| Portable artifacts  | `.smolmachine` | Images (need daemon) | No | No | No | No |
 
 Platform Support
 ----------------

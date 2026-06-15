@@ -345,10 +345,7 @@ run_with_timeout() {
 }
 
 # Kill any orphaned smolvm processes that might be holding the database lock.
-# This includes:
-#   - smolvm serve (API server)
-#   - smolvm-bin machine start (VM processes from previous test runs)
-#   - Packed binaries running as daemons
+# This includes smolvm-bin machine start (VM processes from previous test runs).
 #
 # When SMOLVM_ORCHESTRATED=1 (set by run_tests.sh), this is a no-op: the
 # orchestrator does a single pre-flight kill before launching any suites, so
@@ -361,14 +358,6 @@ kill_orphan_smolvm_processes() {
         return 0
     fi
     local killed=0
-
-    # Kill any smolvm serve processes
-    if pkill -f "smolvm serve" 2>/dev/null; then
-        ((killed++)) || true
-    fi
-    if pkill -f "smolvm-bin serve" 2>/dev/null; then
-        ((killed++)) || true
-    fi
 
     # Kill any orphaned machine processes (from smolvm-bin in dist/)
     if pkill -f "smolvm-bin machine start" 2>/dev/null; then
@@ -389,7 +378,7 @@ kill_orphan_smolvm_processes() {
 # Check if any smolvm processes are running that might interfere with tests
 check_smolvm_processes() {
     local procs
-    procs=$(pgrep -f "(smolvm serve|smolvm-bin machine start|smolvm machine start)" 2>/dev/null || true)
+    procs=$(pgrep -f "(smolvm-bin machine start|smolvm machine start)" 2>/dev/null || true)
     if [[ -n "$procs" ]]; then
         return 1  # Processes found
     fi
@@ -405,6 +394,6 @@ ensure_clean_test_environment() {
     if ! check_smolvm_processes; then
         log_info "Warning: Some smolvm processes are still running after cleanup"
         log_info "Processes:"
-        ps aux | grep -E "(smolvm serve|smolvm-bin machine|smolvm machine)" | grep -v grep || true
+        ps aux | grep -E "(smolvm-bin machine|smolvm machine)" | grep -v grep || true
     fi
 }

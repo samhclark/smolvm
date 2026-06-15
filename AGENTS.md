@@ -33,15 +33,6 @@ smolvm machine create --name myvm --ssh-agent --net
 # Inject secrets into workload env (referenced from host env var / file)
 smolvm machine run --secret-env OPENAI_API_KEY=OPENAI_API_KEY -- ./app
 smolvm machine run -s Smolfile -- ./app   # Smolfile [secrets] resolves at launch
-
-# Pack into portable executable
-smolvm pack create --image python:3.12-alpine -o ./my-python
-./my-python run -- python3 -c "print('hello')"
-
-# Create machine from packed artifact (fast start, no pull)
-smolvm machine create --name my-vm --from ./my-python.smolmachine
-smolvm machine start --name my-vm
-smolvm machine exec --name my-vm -- pip install requests
 ```
 
 ## When to Use What
@@ -52,8 +43,6 @@ smolvm machine exec --name my-vm -- pip install requests
 | Interactive shell (ephemeral) | `smolvm machine run --net -it --image IMAGE -- /bin/sh` |
 | Interactive shell (persistent) | `smolvm machine shell --name NAME` |
 | Persistent dev environment | `machine create` → `machine start` → `machine exec` |
-| Ship software as a binary | `smolvm pack create --image IMAGE -o OUTPUT` |
-| Fast persistent machine from packed artifact | `machine create --name NAME --from FILE.smolmachine` |
 | Use git/ssh with private keys safely | Add `--ssh-agent` to run or create |
 | Inject API keys / tokens without putting them on the command line | `--secret-env`/`--secret-file` flags or Smolfile `[secrets]` |
 | Minimal VM without image | `smolvm machine run -s Smolfile` (bare VM) |
@@ -65,9 +54,6 @@ smolvm machine exec --name my-vm -- pip install requests
 - **`machine run`** — ephemeral. All changes are discarded when the command exits.
 - **`machine exec`** — persistent. Filesystem changes (package installs, config edits) persist across exec sessions for the same machine, whether bare or image-based. Changes are stored in an overlay on the machine's storage disk.
 - **`machine stop` + `start`** — changes persist across restarts. The persistent overlay is remounted preserving previous changes.
-- **`pack run`** — ephemeral. Each run starts fresh from the packed image.
-- **`pack start` + `exec`** — daemon mode. `/workspace` persists across exec sessions and stop/start. Container overlay resets per exec (package installs don't persist — use `/workspace` for durable data).
-- **`machine create --from .smolmachine`** — creates a persistent named machine from a packed artifact. Boots from pre-extracted layers (~250ms, no image pull). Full `machine exec` persistence — package installs, file writes all survive across exec and stop/start.
 
 ## CLI Structure
 
@@ -77,23 +63,17 @@ All commands use named flags (no positional args except `machine create --name N
 smolvm machine run --image IMAGE [-- COMMAND]     # ephemeral
 smolvm machine exec --name NAME [-- COMMAND]      # run in existing VM
 smolvm machine shell [--name NAME]                # interactive shell (auto-starts)
-smolvm machine create --name NAME [OPTIONS]              # create persistent
-smolvm machine create --name NAME --from FILE.smolmachine  # from packed artifact
+smolvm machine create --name NAME [OPTIONS]       # create persistent
 smolvm machine start [--name NAME]                # start (default: "default")
 smolvm machine stop [--name NAME]                 # stop
-smolvm machine delete --name NAME [-f]                   # delete
+smolvm machine delete --name NAME [-f]            # delete
 smolvm machine status [--name NAME]               # check state
 smolvm machine ls [--json]                        # list all
-smolvm machine update --name NAME [OPTIONS]              # modify stopped machine settings
+smolvm machine update --name NAME [OPTIONS]       # modify stopped machine settings
 smolvm machine cp SRC DST                         # copy files (host↔VM)
 smolvm machine exec --stream --name NAME -- CMD   # streaming output
 smolvm machine monitor [--name NAME]              # foreground health + restart
 
-smolvm pack create --image IMAGE -o PATH          # package
-smolvm pack create --from-vm NAME -o PATH         # pack from VM snapshot
-smolvm pack run [--sidecar PATH] [-- CMD]         # run .smolmachine
-
-smolvm serve start [--listen ADDR:PORT|PATH]      # HTTP API
 smolvm config registries edit                     # registry auth
 
 # Secrets are references to host env vars / files, resolved at launch — no
@@ -123,14 +103,14 @@ Default registry: `registry.smolmachines.com`. Digest references require `sha256
 
 | Flag | Short | Used on | Description |
 |------|-------|---------|-------------|
-| `--image` | `-I` | run, create, pack create | OCI image |
+| `--image` | `-I` | run, create | OCI image |
 | `--name` | `-n` | run, start, stop, status, exec, update | Machine name (default: "default") |
 | `--net` | | run, create | Enable outbound networking (off by default) |
 | `--gpu` | | run, create | Enable GPU acceleration (Vulkan via virtio-gpu) |
 | `--gpu-vram` | | run, create | GPU shared-memory region size in MiB (default: 4096). Ignored without `--gpu`. |
 | `--volume` | `-v` | run, create, update | Mount host dir: `HOST:GUEST[:ro]` |
 | `--port` | `-p` | run, create, update | Port mapping: `HOST:GUEST` |
-| `--smolfile` | `-s` | run, create, pack create | Load config from Smolfile |
+| `--smolfile` | `-s` | run, create | Load config from Smolfile |
 | `--interactive` | `-i` | run, exec | Keep stdin open |
 | `--tty` | `-t` | run, exec | Allocate pseudo-TTY |
 | `--allow-cidr` | | run, create | CIDR egress filter (implies --net) |
@@ -170,13 +150,6 @@ ports = ["8080:8080"]                 # port forwarding
 init = ["pip install -r requirements.txt"]  # run on every VM start
 env = ["APP_MODE=dev"]                # dev-only env (extends top-level)
 workdir = "/app"                      # dev-only workdir
-
-# Artifact profile (used by `pack create`)
-[artifact]
-cpus = 4                              # override resources for distribution
-memory = 2048
-entrypoint = ["/app/run"]             # override entrypoint for packed binary
-oci_platform = "linux/amd64"          # target OCI platform
 
 # Health check (used by `machine monitor`)
 [health]
@@ -315,8 +288,7 @@ already lives on the host — a host environment variable or a host file — and
 resolved into the workload's process environment at launch time. Bring your own
 secrets manager (Vault, 1Password, AWS, sops, your shell): render the value into
 an env var or file, then point a ref at it. Only the reference is ever
-persisted; the resolved value never lands in the VM record, the database, or a
-`.smolmachine` pack.
+persisted; the resolved value never lands in the VM record or the database.
 
 Attach refs on the command line:
 
@@ -354,10 +326,6 @@ never leave the host.
 
 **Where they're resolved:** `machine run`, `machine create` + `machine start`,
 and `machine exec` resolve refs against *this host* under a trusted-local scope.
-Untrusted surfaces — HTTP API request bodies and portable `.smolmachine` packs —
-are treated as untrusted callers and may carry **no** resolvable secret ref:
-`from_env` would expose the server's env and `from_file` would be an arbitrary
-host-file read, so both are rejected. Configure secrets locally instead.
 
 ## File Copy
 
@@ -378,8 +346,7 @@ through the container's overlay filesystem so both commands see the
 same files.
 
 **`/workspace` shared directory:** Every machine has a `/workspace`
-directory — bare VMs, image-based VMs, and machines created from
-`.smolmachine` artifacts. It persists across `exec` sessions and
+directory — bare VMs and image-based VMs. It persists across `exec` sessions and
 across `stop`/`start` cycles. It's a good default location for
 scripts, data, and results. Passing `-v /host/dir:/workspace` replaces
 the default storage-disk workspace with your host directory for that
@@ -422,23 +389,12 @@ Typical throughput on macOS (Apple Silicon): ~35-42 MB/s upload,
 
 ## Streaming Exec
 
-Stream command output in real-time instead of buffering:
+Stream command output in real-time:
 
 ```bash
-# CLI — prints output as it arrives
 smolvm machine exec --stream --name myvm -- python3 train.py
-
-# API — Server-Sent Events
-POST /api/v1/machines/:name/exec/stream
-Content-Type: application/json
-{"command": ["python3", "train.py"]}
-
-# Response: text/event-stream
-# event: stdout
-# data: Epoch 1/10...
-# event: exit
-# data: {"exitCode":0}
 ```
+
 ## Bare VM Mode
 
 `machine run` works without `--image` when a Smolfile provides the workload config, or for direct Alpine shell access:
@@ -456,61 +412,11 @@ smolvm machine run -d -s Smolfile
 
 Bare VMs run commands directly in the Alpine rootfs — no OCI image pull needed. Use this when you need a minimal Linux environment.
 
-## Packed Binaries (.smolmachine)
-
-`smolvm pack create` produces two files:
-- `my-app` — stub binary with embedded VM runtime (platform-specific)
-- `my-app.smolmachine` — VM payload: rootfs, OCI layers, storage (cross-platform)
-
-The packed binary runs as a normal executable:
-```bash
-./my-app run -- python3 -c "print('hello')"  # ephemeral, cleaned up after exit
-./my-app start                               # persistent daemon mode
-./my-app exec -- pip install x               # exec into daemon
-./my-app stop                                # stop daemon
-```
-
-Alternatively, create a named machine from the `.smolmachine` for full lifecycle management:
-```bash
-smolvm machine create --name my-vm --from my-app.smolmachine
-smolvm machine start --name my-vm            # ~250ms boot, no image pull
-smolvm machine exec --name my-vm -- pip install x   # fully persistent
-smolvm machine stop --name my-vm
-smolvm machine ls                            # shows my-vm
-```
-
-The `.smolmachine` manifest includes registry-oriented metadata:
-- `host_platform` — host OS+arch this machine runs on (e.g., `darwin/arm64`), distinct from `platform` which is the guest
-- `created` — RFC 3339 timestamp of when the machine was packed
-- `smolvm_version` — version of smolvm that built it
-
-## HTTP API
-
-Start with `smolvm serve start --listen 127.0.0.1:8080` or `smolvm serve start --listen $XDG_RUNTIME_DIR/smolvm.sock`. Key endpoints:
-
-```
-POST   /api/v1/machines                    Create machine
-GET    /api/v1/machines                    List machines
-GET    /api/v1/machines/:name              Get machine
-POST   /api/v1/machines/:name/start        Start machine
-POST   /api/v1/machines/:name/stop         Stop machine
-DELETE /api/v1/machines/:name              Delete machine
-POST   /api/v1/machines/:name/exec         Execute command
-POST   /api/v1/machines/:name/exec/stream  Streaming exec (SSE)
-PUT    /api/v1/machines/:name/files/*path  Upload file
-GET    /api/v1/machines/:name/files/*path  Download file
-GET    /api/v1/machines/:name/logs         Stream logs (SSE)
-POST   /api/v1/machines/:name/images/pull  Pull OCI image
-```
-
-OpenAPI spec: `smolvm serve openapi`
-
 ## Important Defaults
 
 - Machine name defaults to `"default"` when `--name` is omitted
 - Network is **off** by default (security-first)
 - CPUs: 4, Memory: 8192 MiB, Storage: 20 GiB, Overlay: 2 GiB
-- Packed binaries use the same defaults (CPUs: 4, Memory: 8192 MiB)
 - Memory and CPU are elastic via virtio balloon — the host only commits what the guest actually uses and reclaims the rest
 
 ## Important Behaviors

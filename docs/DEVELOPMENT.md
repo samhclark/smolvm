@@ -57,7 +57,6 @@ cargo make test
 cargo make test-cli        # CLI tests only
 cargo make test-sandbox    # Sandbox tests only
 cargo make test-machine    # MicroVM tests only
-cargo make test-pack       # Pack tests only
 cargo make test-lib        # Unit tests (no VM required)
 ```
 
@@ -117,7 +116,6 @@ new features), see:
 
 **Database lock errors** ("Database already open"):
 ```bash
-pkill -f "smolvm serve"
 pkill -f "smolvm-bin machine start"
 ```
 

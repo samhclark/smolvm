@@ -10,7 +10,7 @@ against real VMs — no mocking.
 Single entry point for all test suites.
 
 ```bash
-./tests/run_tests.sh                      # all 11 feature suites (~10 min)
+./tests/run_tests.sh                      # all feature suites (~10 min)
 SMOLVM_SKIP_SLOW=1 ./tests/run_tests.sh   # skip tests with long sleeps (~5 min)
 ./tests/run_tests.sh bare network         # specific groups only
 ```
@@ -29,7 +29,6 @@ SMOLVM_SKIP_SLOW=1 ./tests/run_tests.sh   # skip tests with long sleeps (~5 min)
 | `reliability` | `test_reliability.sh` | 5 | Concurrency, state probe, ls-does-not-kill-vm |
 | `run` | `test_machine_run.sh` | 25 | Ephemeral `machine run` scenarios |
 | `image` | `test_machine_image.sh` | 13 | Image-based VMs, exec-join, large stdout |
-| `packed` | `test_machine_packed.sh` | 2 | `.smolmachine` create and cp |
 
 ### Extended suites (opt-in only)
 
@@ -37,21 +36,16 @@ These are not included in the default run. Pass the group name explicitly:
 
 ```bash
 ./tests/run_tests.sh cli
-./tests/run_tests.sh api
 ./tests/run_tests.sh virtio-net
 ./tests/run_tests.sh smolfile
-./tests/run_tests.sh pack
-./tests/run_tests.sh pack-quick     # pack tests, skip large image pulls
 ./tests/run_tests.sh gpu            # requires GPU hardware
 ```
 
 | Group | Suite file | Tests |
 |---|---|---|
-| `cli` | `test_cli.sh` | 10 |
-| `api` | `test_api.sh` | 25 |
-| `virtio-net` | `test_virtio_net.sh` | 6 |
+| `cli` | `test_cli.sh` | 9 |
+| `virtio-net` | `test_virtio_net.sh` | 5 |
 | `smolfile` | `test_smolfile.sh` | 49 |
-| `pack` / `pack-quick` | `test_pack.sh` | 37 |
 | `gpu` | `test_gpu.sh` | 14 |
 
 ### Environment variables

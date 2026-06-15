@@ -36,13 +36,6 @@ smolvm machine exec --name dev -- python3 --version
 smolvm machine stop --name dev
 ```
 
-### Pack a distributable binary
-
-```bash
-smolvm pack create -s examples/openclaw-app/openclaw.smolfile -o openclaw-packed
-./openclaw-packed
-```
-
 ## Smolfile Reference
 
 ```toml
@@ -86,13 +79,6 @@ init = ["npm install"]               # dev bootstrap commands
 workdir = "/app"                     # dev-only workdir override
 ports = ["8080:8080"]                # host:guest port forwarding
 
-# Artifact profile (for smolvm pack create -s)
-[artifact]
-cpus = 4                             # override resources for distribution
-memory = 2048
-entrypoint = ["/app/api"]            # override entrypoint for packed binary
-oci_platform = "linux/amd64"         # target OCI platform
-
 ```
 
 ### Merge precedence
@@ -107,15 +93,4 @@ env:        top-level env + [dev].env + CLI -e
 init:       [dev].init + CLI --init
 volumes:    [dev].volumes + CLI -v
 ports:      [dev].ports + CLI -p
-```
-
-For `pack create`:
-
-```
-image:      --image flag > Smolfile image
-entrypoint: --entrypoint flag > [artifact].entrypoint > Smolfile entrypoint > image metadata
-cmd:        [artifact].cmd > Smolfile cmd > image metadata
-cpus:       --cpus flag > [artifact].cpus > top-level cpus
-env:        image env + Smolfile env (dedup by key)
-workdir:    Smolfile workdir > image workdir
 ```
