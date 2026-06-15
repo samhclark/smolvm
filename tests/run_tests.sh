@@ -18,16 +18,12 @@
 #   reliability     test_reliability.sh
 #   run             test_machine_run.sh
 #   image           test_machine_image.sh
-#   packed          test_machine_packed.sh
 #
 # Extended suites (opt-in only, not run by default):
 #   cli             test_cli.sh
-#   api             test_api.sh
 #   virtio-net      test_virtio_net.sh
 #   smolfile        test_smolfile.sh
 #   secrets         test_secrets.sh
-#   pack            test_pack.sh
-#   pack-quick      test_pack.sh --quick
 #   gpu             test_gpu.sh  (requires GPU hardware)
 #
 # Non-pass/fail:
@@ -58,14 +54,10 @@ get_suite() {
         reliability) echo "$SCRIPT_DIR/test_reliability.sh" ;;
         run)         echo "$SCRIPT_DIR/test_machine_run.sh" ;;
         image)       echo "$SCRIPT_DIR/test_machine_image.sh" ;;
-        packed)      echo "$SCRIPT_DIR/test_machine_packed.sh" ;;
         cli)         echo "$SCRIPT_DIR/test_cli.sh" ;;
-        api)         echo "$SCRIPT_DIR/test_api.sh" ;;
         virtio-net)  echo "$SCRIPT_DIR/test_virtio_net.sh" ;;
         smolfile)    echo "$SCRIPT_DIR/test_smolfile.sh" ;;
         secrets)     echo "$SCRIPT_DIR/test_secrets.sh" ;;
-        pack)        echo "$SCRIPT_DIR/test_pack.sh" ;;
-        pack-quick)  echo "$SCRIPT_DIR/test_pack.sh --quick" ;;
         gpu)         echo "$SCRIPT_DIR/test_gpu.sh" ;;
         scale)       echo "$SCRIPT_DIR/test_scale.sh" ;;
         *)           return 1 ;;
@@ -98,7 +90,6 @@ run_suite() {
 
 # Single pre-flight orphan kill before any suite touches the system.
 echo "Pre-flight: killing orphan smolvm processes..."
-pkill -f "smolvm serve" 2>/dev/null || true
 pkill -f "smolvm-bin machine start" 2>/dev/null || true
 pkill -f "smolvm machine start" 2>/dev/null || true
 sleep 1
@@ -122,7 +113,7 @@ if [[ $# -eq 0 ]]; then
     done
 
     # Sequential suites -- run one at a time.
-    for _name in bare db reliability storage run image network volumes ports packed; do
+    for _name in bare db reliability storage run image network volumes ports; do
         run_suite "$_name"
     done
 
@@ -150,8 +141,8 @@ else
         fi
         get_suite "$group" > /dev/null || {
             echo "Unknown group: $group"
-            echo "Feature suites: bare db network volumes ports storage resources reliability run image packed"
-            echo "Extended suites: cli api virtio-net smolfile pack pack-quick gpu scale"
+            echo "Feature suites: bare db network volumes ports storage resources reliability run image"
+            echo "Extended suites: cli virtio-net smolfile gpu scale"
             echo "Other: bench"
             exit 1
         }
