@@ -13,7 +13,7 @@ set -e
 WITH_LOCAL_LIBKRUN=0
 SKIP_AGENT_BUILD=0
 LOCAL_LIBKRUN_DIR=""
-LIBKRUN_MAKE_FLAGS="${LIBKRUN_MAKE_FLAGS:-BLK=1 NET=1 GPU=1}"
+LIBKRUN_MAKE_FLAGS="${LIBKRUN_MAKE_FLAGS:-BLK=1 NET=1}"
 
 print_help() {
     cat <<'EOF'
@@ -214,13 +214,6 @@ if [[ "$WITH_LOCAL_LIBKRUN" == "1" ]]; then
     mkdir -p "$LOCAL_BUNDLE_DIR"
     copy_matching_libraries "$BASE_LIB_DIR" "libkrun*" "$LOCAL_BUNDLE_DIR"
     copy_matching_libraries "$BASE_LIB_DIR" "libkrunfw*" "$LOCAL_BUNDLE_DIR"
-    # GPU rendering libraries are not rebuilt by --with-local-libkrun, but must
-    # be carried over from the base lib dir so the dist stays GPU-capable.
-    copy_matching_libraries "$BASE_LIB_DIR" "libvirglrenderer*" "$LOCAL_BUNDLE_DIR"
-    copy_matching_libraries "$BASE_LIB_DIR" "libMoltenVK*" "$LOCAL_BUNDLE_DIR"
-    copy_matching_libraries "$BASE_LIB_DIR" "libepoxy*" "$LOCAL_BUNDLE_DIR"
-    # Linux render server binary (required for Venus Vulkan).
-    [[ -f "$BASE_LIB_DIR/virgl_render_server" ]] && cp "$BASE_LIB_DIR/virgl_render_server" "$LOCAL_BUNDLE_DIR/"
     WORK_LIB_DIR="$LOCAL_BUNDLE_DIR"
     echo "Staging local build bundle in $WORK_LIB_DIR"
 fi
@@ -347,15 +340,6 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     cp "$WORK_LIB_DIR/libkrunfw.5.dylib" "$DIST_DIR/lib/"
     # Create symlink for compatibility
     ln -sf libkrunfw.5.dylib "$DIST_DIR/lib/libkrunfw.dylib"
-    # Bundle GPU rendering libraries if present (virglrenderer → MoltenVK + epoxy).
-    # All three dylibs use @loader_path refs so they resolve correctly regardless
-    # of where the lib/ directory is placed after installation.
-    for gpu_lib in libvirglrenderer.1.dylib libMoltenVK.dylib libepoxy.0.dylib; do
-        if [[ -f "$WORK_LIB_DIR/$gpu_lib" ]]; then
-            cp "$WORK_LIB_DIR/$gpu_lib" "$DIST_DIR/lib/"
-            echo "Bundled GPU library: $gpu_lib ($(du -h "$DIST_DIR/lib/$gpu_lib" | cut -f1))"
-        fi
-    done
 else
     copy_so_with_symlinks() {
         local lib_prefix="$1"
@@ -392,35 +376,6 @@ else
 
     copy_so_with_symlinks libkrun required
     copy_so_with_symlinks libkrunfw required
-
-    # Strip the hard NEEDED on virglrenderer from the GPU-enabled libkrun so a
-    # host without it can still dlopen libkrun (paired with the RTLD_LAZY load in
-    # src/agent/krun.rs). virglrenderer is loaded by soname at runtime only when
-    # the GPU path actually runs — so one build serves both GPU and non-GPU hosts.
-    if command -v patchelf >/dev/null 2>&1; then
-        for lk in "$DIST_DIR"/lib/libkrun.so*; do
-            [[ -f "$lk" && ! -L "$lk" ]] || continue
-            if patchelf --print-needed "$lk" 2>/dev/null | grep -q libvirglrenderer; then
-                patchelf --remove-needed libvirglrenderer.so.1 "$lk"
-                echo "Stripped libvirglrenderer NEEDED from $(basename "$lk") — GPU stays optional at runtime"
-            fi
-        done
-    else
-        echo "Warning: patchelf not found — libkrun keeps its hard virglrenderer NEEDED;"
-        echo "         non-GPU Linux hosts will fail to load it. Install patchelf in the build env."
-    fi
-
-    # Bundle GPU rendering libraries if present (virglrenderer chain for Venus/Vulkan).
-    # libMoltenVK is macOS-only — not included here.
-    for gpu_lib_prefix in libvirglrenderer libepoxy; do
-        copy_so_with_symlinks "$gpu_lib_prefix" optional
-    done
-    # Bundle render server binary (required for Venus Vulkan on Linux).
-    if [[ -f "$WORK_LIB_DIR/virgl_render_server" ]]; then
-        cp "$WORK_LIB_DIR/virgl_render_server" "$DIST_DIR/lib/"
-        chmod +x "$DIST_DIR/lib/virgl_render_server"
-        echo "Bundled: virgl_render_server ($(du -h "$DIST_DIR/lib/virgl_render_server" | cut -f1))"
-    fi
 fi
 
 # Copy init.krun for Linux (required by libkrunfw kernel)

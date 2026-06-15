@@ -40,7 +40,7 @@
           libkrunfw = final.smolvm-libkrunfw;
           withBlk = true;
           withNet = true;
-          withGpu = final.stdenv.hostPlatform.isLinux;
+          withGpu = false;
         };
 
         smolvm = final.callPackage ./nix/smolvm.nix { };

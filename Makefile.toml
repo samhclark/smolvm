@@ -140,7 +140,7 @@ script = [
 '''
 set -e
 ARCH=$(uname -m)
-make -C libkrun BLK=1 GPU=1
+make -C libkrun BLK=1
 mkdir -p lib/linux-${ARCH}
 cp libkrun/target/release/libkrun.so lib/linux-${ARCH}/libkrun.so
 echo "✓ libkrun built and copied to lib/linux-${ARCH}/libkrun.so"
